@@ -105,7 +105,7 @@ export default function Home() {
       if (ctx) {
         ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
         if (currentState !== 'SCANNING') {
-          const radius = Math.min(80, Math.abs(smmoothedShift) * 4);
+          const radius = Math.min(80, Math.abs(smoothedShift) * 4);
           ctx.beginPath();
           ctx.arc(150, 150, radius, 0, 2 * Math.PI);
           ctx.fillStyle = currentState === 'INBOUND' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)';
