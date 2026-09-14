@@ -2,14 +2,14 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Radar, Activity, AudioLines, Copy, Power, Settings, Zap } from 'lucide-react';
+import { Activity, AudioLines, Copy, Power, Settings, Radar } from 'lucide-react';
 
 export default function Home() {
   const [isSonarActive, setIsSonarActive] = useState(false);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [volume, setVolume] = useState(0.15);
   const [dopplerShift, setDopplerShift] = useState(0);
-  const [rawShift, setRawShift] = useState(0);
+  const [peakFreq, setPeakFreq] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [motionState, setMotionState] = useState<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
   
@@ -20,13 +20,13 @@ export default function Home() {
   const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const motionStateRef = useRef<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
-  const baselineRef = useRef<{ toward: number; away: number }>({ toward: 0, away: 0 });
+  const baselineFreqRef = useRef(19000);
   const lastLogTimeRef = useRef(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const addLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
-    setLogs(prev => [...prev.slice(-50), `[${timestamp}] ${message}`]); // Keep last 50 logs
+    setLogs(prev => [...prev.slice(-50), `[${timestamp}] ${message}`]);
   }, []);
 
   const copyLogs = () => {
@@ -34,6 +34,7 @@ export default function Home() {
     addLog("System: Logs copied to clipboard.");
   };
 
+  // The Precision Math Engine
   const analyzeDoppler = () => {
     if (!analyserRef.current || !dataArrayRef.current || !audioContextRef.current) return;
 
@@ -47,73 +48,113 @@ export default function Home() {
     const baseFreq = 19000;
     const binWidth = sampleRate / fftSize;
     const baseBin = Math.floor(baseFreq / binWidth);
-    const range = Math.floor(50 / binWidth); 
-
-    let awayEnergy = 0;
-    let towardEnergy = 0;
-
-    for (let i = baseBin - range; i < baseBin - 2; i++) {
-      if (i > 0) awayEnergy += dataArray[i];
-    }
-    for (let i = baseBin + 2; i < baseBin + range; i++) {
-      if (i < dataArray.length) towardEnergy += dataArray[i];
-    }
-
-    // Subtract the baseline (calibrated speaker bleed)
-    const adjustedToward = Math.max(0, towardEnergy - baselineRef.current.toward);
-    const adjustedAway = Math.max(0, awayEnergy - baselineRef.current.away);
     
-    const netShift = (adjustedToward - adjustedAway) / 20;
-    setRawShift(netShift);
-    
-    const smoothedShift = Math.max(-100, Math.min(100, netShift));
-    setDopplerShift(prev => (prev * 0.7) + (smoothedShift * 0.3));
+    // We only look at a narrow window of +/- 100Hz for extreme precision
+    const range = Math.floor(100 / binWidth); 
 
-    // Debounce state changes to prevent log spam
+    let maxAmp = 0;
+    let peakBin = baseBin;
+
+    // Find the exact bin with the highest energy in our window
+    for (let i = baseBin - range; i < baseBin + range; i++) {
+      if (i >= 0 && i < dataArray.length) {
+        if (dataArray[i] > maxAmp) {
+          maxAmp = dataArray[i];
+          peakBin = i;
+        }
+      }
+    }
+
+    // Convert the peak bin back to a frequency
+    const currentPeakFreq = peakBin * binWidth;
+    const shift = currentPeakFreq - baselineFreqRef.current;
+    
+    // Smooth the shift value for UI
+    const smoothedShift = Math.max(-100, Math.min(100, shift));
+    setDopplerShift(prev => (prev * 0.6) + (smoothedShift * 0.4));
+    setPeakFreq(currentPeakFreq);
+
+    // 2D Canvas Visualizer - Draw what the mic actually hears
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      if (ctx) {
+        const W = canvasRef.current.width;
+        const H = canvasRef.current.height;
+        ctx.clearRect(0, 0, W, H);
+
+        // Draw Grid
+        ctx.strokeStyle = 'rgba(34, 211, 238, 0.1)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) {
+          const y = (H / 4) * i;
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(W, y);
+          ctx.stroke();
+        }
+
+        // Draw 19,000 Hz Center Line (Baseline)
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(W / 2, 0);
+        ctx.lineTo(W / 2, H);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw the actual waveform
+        ctx.beginPath();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = motionState === 'INBOUND' ? '#ef4444' : motionState === 'OUTBOUND' ? '#22c55e' : '#22d3ee';
+        
+        const startBin = baseBin - range;
+        const endBin = baseBin + range;
+        const sliceWidth = W / (endBin - startBin);
+
+        for (let i = startBin; i <= endBin; i++) {
+          const x = (i - startBin) * sliceWidth;
+          const y = H - (dataArray[i] / 255) * H;
+          if (i === startBin) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Fill under the wave
+        ctx.lineTo(W, H);
+        ctx.lineTo(0, H);
+        ctx.closePath();
+        ctx.fillStyle = motionState === 'INBOUND' ? 'rgba(239, 68, 68, 0.1)' : motionState === 'OUTBOUND' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(34, 211, 238, 0.1)';
+        ctx.fill();
+      }
+    }
+
+    // State logging with debounce
     const now = Date.now();
     let currentState = motionStateRef.current;
     
-    if (smoothedShift > 15) {
-      if (currentState !== 'INBOUND' && now - lastLogTimeRef.current > 500) {
+    if (smoothedShift > 2) {
+      if (currentState !== 'INBOUND' && now - lastLogTimeRef.current > 300) {
         currentState = 'INBOUND';
         motionStateRef.current = currentState;
         setMotionState(currentState);
         lastLogTimeRef.current = now;
-        addLog(`MOTION INBOUND | Shift: +${smoothedShift.toFixed(2)} Hz | Velocity detected.`);
+        addLog(`MOTION INBOUND | Peak: ${currentPeakFreq.toFixed(2)} Hz | Shift: +${smoothedShift.toFixed(2)} Hz`);
       }
-    } else if (smoothedShift < -15) {
-      if (currentState !== 'OUTBOUND' && now - lastLogTimeRef.current > 500) {
+    } else if (smoothedShift < -2) {
+      if (currentState !== 'OUTBOUND' && now - lastLogTimeRef.current > 300) {
         currentState = 'OUTBOUND';
         motionStateRef.current = currentState;
         setMotionState(currentState);
         lastLogTimeRef.current = now;
-        addLog(`MOTION OUTBOUND | Shift: ${smoothedShift.toFixed(2)} Hz | Object retreating.`);
+        addLog(`MOTION OUTBOUND | Peak: ${currentPeakFreq.toFixed(2)} Hz | Shift: ${smoothedShift.toFixed(2)} Hz`);
       }
     } else {
-      if (currentState !== 'SCANNING' && now - lastLogTimeRef.current > 500) {
+      if (currentState !== 'SCANNING' && now - lastLogTimeRef.current > 300) {
         currentState = 'SCANNING';
         motionStateRef.current = currentState;
         setMotionState(currentState);
         lastLogTimeRef.current = now;
-        addLog(`SECTOR CLEAR | Environment stable.`);
-      }
-    }
-
-    // Draw Canvas Radar Blip
-    if (canvasRef.current) {
-      const ctx = canvasRef.current.getContext('2d');
-      if (ctx) {
-        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-        if (currentState !== 'SCANNING') {
-          const radius = Math.min(80, Math.abs(smoothedShift) * 4);
-          ctx.beginPath();
-          ctx.arc(150, 150, radius, 0, 2 * Math.PI);
-          ctx.fillStyle = currentState === 'INBOUND' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)';
-          ctx.fill();
-          ctx.strokeStyle = currentState === 'INBOUND' ? 'rgba(239, 68, 68, 0.8)' : 'rgba(34, 197, 94, 0.8)';
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
+        addLog(`SECTOR CLEAR | Peak stable at ${currentPeakFreq.toFixed(2)} Hz`);
       }
     }
 
@@ -123,7 +164,7 @@ export default function Home() {
   const startSonar = async () => {
     try {
       setLogs([]);
-      addLog("System: Initializing React Sonar Array...");
+      addLog("System: Initializing High-Res Array...");
       setIsCalibrating(true);
       
       const context = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -146,38 +187,34 @@ export default function Home() {
       });
       const source = context.createMediaStreamSource(stream);
       const analyser = context.createAnalyser();
-      analyser.fftSize = 8192;
+      analyser.fftSize = 32768; // MAXIMUM FREQUENCY RESOLUTION
       source.connect(analyser);
       analyserRef.current = analyser;
       dataArrayRef.current = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
 
-      // Calibration Phase (3 seconds)
-      addLog("System: Calibrating baseline noise...");
-      let calToward = 0, calAway = 0, calFrames = 0;
-      const calInterval = setInterval(() => {
+      // Calibration Phase (Find the exact baseline peak)
+      addLog("System: Calibrating baseline peak...");
+      setTimeout(() => {
         if (!analyserRef.current || !dataArrayRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArrayRef.current);
-        const sampleRate = context.sampleRate;
-        const binWidth = sampleRate / analyser.fftSize;
+        const binWidth = context.sampleRate / analyser.fftSize;
         const baseBin = Math.floor(19000 / binWidth);
-        const range = Math.floor(50 / binWidth);
+        const range = Math.floor(100 / binWidth);
         
-        let tE = 0, aE = 0;
-        for (let i = baseBin - range; i < baseBin - 2; i++) if (i > 0) aE += dataArrayRef.current[i];
-        for (let i = baseBin + 2; i < baseBin + range; i++) if (i < dataArrayRef.current.length) tE += dataArrayRef.current[i];
-        
-        calToward += tE; calAway += aE; calFrames++;
-      }, 100);
-
-      setTimeout(() => {
-        clearInterval(calInterval);
-        baselineRef.current = { toward: calToward / calFrames, away: calAway / calFrames };
-        addLog(`System: Calibration complete. Baseline removed (T:${baselineRef.current.toward.toFixed(0)} A:${baselineRef.current.away.toFixed(0)}).`);
+        let maxAmp = 0, peakBin = baseBin;
+        for (let i = baseBin - range; i < baseBin + range; i++) {
+          if (i >= 0 && i < dataArrayRef.current.length && dataArrayRef.current[i] > maxAmp) {
+            maxAmp = dataArrayRef.current[i];
+            peakBin = i;
+          }
+        }
+        baselineFreqRef.current = peakBin * binWidth;
+        addLog(`System: Calibration complete. Baseline locked at ${baselineFreqRef.current.toFixed(2)} Hz.`);
         setIsCalibrating(false);
         setIsSonarActive(true);
         motionStateRef.current = 'SCANNING';
         analyzeDoppler();
-      }, 3000);
+      }, 2000);
 
     } catch (err) {
       addLog("System: FATAL ERROR - Initialization failed.");
@@ -194,7 +231,6 @@ export default function Home() {
     setIsSonarActive(false);
     setIsCalibrating(false);
     setDopplerShift(0);
-    setRawShift(0);
     motionStateRef.current = 'SCANNING';
     addLog("System: Sonar deactivated.");
   };
@@ -207,27 +243,23 @@ export default function Home() {
 
   useEffect(() => () => stopSonar(), []);
 
-  const intensity = Math.abs(dopplerShift) / 100;
-
   return (
     <main className="min-h-screen bg-[#05070a] text-white flex flex-col items-center justify-start p-4 sm:p-8 font-mono overflow-hidden">
       
-      {/* Animated Background Grid */}
       <motion.div 
         className="fixed inset-0 bg-[linear-gradient(to_right,#0a0f1a_1px,transparent_1px),linear-gradient(to_bottom,#0a0f1a_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none"
         animate={{ backgroundPosition: ["0px 0px", "40px 40px"] }}
         transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
       />
 
-      {/* Header */}
-      <header className="z-10 flex justify-between items-center w-full max-w-6xl mb-12">
+      <header className="z-10 flex justify-between items-center w-full max-w-6xl mb-8">
         <div className="flex items-center gap-3">
           <motion.div animate={{ rotate: 360 }} transition={{ duration: 8, repeat: Infinity, ease: "linear" }}>
             <Radar className="text-cyan-400" size={32} />
           </motion.div>
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-cyan-400 tracking-widest">DIGITAL SONAR</h1>
-            <p className="text-gray-600 text-xs tracking-wide">DOPPLER ARRAY v2.0</p>
+            <p className="text-gray-600 text-xs tracking-wide">PRECISION DOPPLER ARRAY v3.0</p>
           </div>
         </div>
         <div className="flex items-center gap-2 bg-gray-900/50 border border-cyan-500/20 px-4 py-2 rounded-lg">
@@ -236,7 +268,7 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="z-10 grid grid-cols-1 lg:grid-cols-3 gap-8 w-full max-w-6xl">
+      <div className="z-10 grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-6xl">
         
         {/* Left Column: Telemetry */}
         <div className="flex flex-col gap-6">
@@ -250,25 +282,26 @@ export default function Home() {
             <div className="space-y-4">
               <div>
                 <div className="flex justify-between text-xs mb-1">
+                  <span className="text-gray-500">Peak Frequency</span>
+                  <span className="text-cyan-300 font-bold">{peakFreq.toFixed(2)} Hz</span>
+                </div>
+              </div>
+              <div>
+                <div className="flex justify-between text-xs mb-1">
                   <span className="text-gray-500">Doppler Shift</span>
                   <span className={`font-bold ${dopplerShift > 0 ? 'text-red-400' : dopplerShift < 0 ? 'text-green-400' : 'text-cyan-400'}`}>
-                    {dopplerShift.toFixed(2)} Hz
+                    {dopplerShift > 0 ? '+' : ''}{dopplerShift.toFixed(2)} Hz
                   </span>
                 </div>
                 <div className="h-2 bg-gray-800 rounded-full overflow-hidden relative">
                   <div className="absolute top-0 left-1/2 w-px h-full bg-gray-600"></div>
                   <motion.div 
                     className={`absolute top-0 h-full ${dopplerShift > 0 ? 'bg-red-500' : 'bg-green-500'}`}
-                    animate={{ width: `${Math.min(50, Math.abs(dopplerShift))}%`, left: dopplerShift > 0 ? '50%' : 'auto', right: dopplerShift < 0 ? '50%' : 'auto' }}
+                    animate={{ width: `${Math.min(50, Math.abs(dopplerShift) * 5)}%`, left: dopplerShift > 0 ? '50%' : 'auto', right: dopplerShift < 0 ? '50%' : 'auto' }}
                   />
                 </div>
               </div>
-              
               <div className="flex justify-between items-center pt-2 border-t border-gray-800">
-                <span className="text-xs text-gray-500">Raw Signal</span>
-                <span className="text-sm text-cyan-300 font-bold">{rawShift.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between items-center">
                 <span className="text-xs text-gray-500">Status</span>
                 <span className={`text-sm font-bold ${
                   motionState === 'INBOUND' ? 'text-red-400' : motionState === 'OUTBOUND' ? 'text-green-400' : 'text-cyan-400'
@@ -277,7 +310,6 @@ export default function Home() {
             </div>
           </motion.div>
 
-          {/* Controls */}
           <motion.div 
             initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
             className="bg-gray-900/40 backdrop-blur-md border border-cyan-500/20 rounded-xl p-6"
@@ -301,7 +333,7 @@ export default function Home() {
             ) : isCalibrating ? (
               <button disabled className="w-full flex items-center justify-center gap-2 bg-yellow-500/20 text-yellow-400 font-bold py-3 rounded-lg cursor-wait">
                 <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
-                  <Zap size={18} />
+                  <Activity size={18} />
                 </motion.div> CALIBRATING...
               </button>
             ) : (
@@ -312,56 +344,37 @@ export default function Home() {
           </motion.div>
         </div>
 
-        {/* Middle Column: Radar Visualizer */}
+        {/* Middle Column: ACTUAL 2D Visualizer */}
         <div className="flex flex-col items-center justify-start">
           <motion.div 
             initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
-            className="relative w-72 h-72 sm:w-80 sm:h-80 [transform:perspective(1000px)_rotateX(20deg)]"
+            className="relative w-full aspect-square bg-gray-900/40 backdrop-blur-md border border-cyan-500/20 rounded-xl p-4 flex flex-col"
           >
-            <div className="absolute inset-0 bg-cyan-500/5 blur-3xl rounded-full"></div>
-            <div className="absolute w-full h-full rounded-full border-2 border-cyan-400/20"></div>
-            <div className="absolute w-3/4 h-3/4 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-400/10"></div>
-            <div className="absolute w-1/2 h-1/2 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-400/10"></div>
-            <div className="absolute top-1/2 left-0 w-full h-px bg-cyan-400/10"></div>
-            <div className="absolute left-1/2 top-0 h-full w-px bg-cyan-400/10"></div>
+            <div className="text-xs text-gray-500 mb-2 flex justify-between">
+              <span>18,900 Hz</span>
+              <span className="text-gray-400">LIVE SPECTRUM (19k Hz)</span>
+              <span>19,100 Hz</span>
+            </div>
+            <canvas ref={canvasRef} width={400} height={400} className="w-full h-full rounded-lg bg-black/50"></canvas>
             
-            <canvas ref={canvasRef} width={300} height={300} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full"></canvas>
-            
-            {isSonarActive && (
-              <motion.div 
-                className="absolute top-1/2 left-1/2 w-1/2 h-1 origin-left bg-gradient-to-r from-transparent via-cyan-400/60 to-cyan-400"
-                animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-              />
-            )}
-
-            <motion.div 
-              className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full ${
-                motionState === 'INBOUND' ? 'bg-red-500 shadow-[0_0_30px_rgba(239,68,68,0.8)]' : 
-                motionState === 'OUTBOUND' ? 'bg-green-500 shadow-[0_0_30px_rgba(34,197,94,0.8)]' : 
-                'bg-cyan-400 shadow-[0_0_30px_rgba(34,211,238,0.8)]'
-              }`}
-              animate={{ scale: motionState !== 'SCANNING' ? [1, 1.5, 1] : 1 }}
-              transition={{ duration: 0.5 }}
-            />
+            <div className="mt-4 text-center">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={motionState}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className={`text-2xl font-bold tracking-widest ${
+                    motionState === 'INBOUND' ? 'text-red-400' : 
+                    motionState === 'OUTBOUND' ? 'text-green-400' : 
+                    'text-cyan-400'
+                  }`}
+                >
+                  {motionState === 'INBOUND' ? 'TARGET INBOUND' : motionState === 'OUTBOUND' ? 'TARGET OUTBOUND' : 'SCANNING'}
+                </motion.div>
+              </AnimatePresence>
+            </div>
           </motion.div>
-          
-          <div className="mt-6 text-center">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={motionState}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className={`text-2xl font-bold tracking-widest ${
-                  motionState === 'INBOUND' ? 'text-red-400' : 
-                  motionState === 'OUTBOUND' ? 'text-green-400' : 
-                  'text-cyan-400'
-                }`}
-              >
-                {motionState === 'INBOUND' ? 'TARGET INBOUND' : motionState === 'OUTBOUND' ? 'TARGET OUTBOUND' : 'SCANNING'}
-              </motion.div>
-            </AnimatePresence>
-          </div>
         </div>
 
         {/* Right Column: System Logs */}
@@ -383,11 +396,11 @@ export default function Home() {
                 <motion.div 
                   key={index} 
                   initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
-                  className={`font-mano ${
+                  className={`font-mono ${
                     log.includes('MOTION') ? 'text-red-300' : 
                     log.includes('OUTBOUND') ? 'text-green-300' : 
                     log.includes('ERROR') ? 'text-red-500' : 
-                    log.includes('Calibration') ? 'text-yellow-300' :
+                    log.includes('Calibration') || log.includes('locked') ? 'text-yellow-300' :
                     'text-gray-500'
                   }`}
                 >
