@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 :root {
-  --background: #01020a;
+  --background: #010208;
   --foreground: #e0e0e0;
   --neon-blue: #0066ff;
   --neon-cyan: #00f3ff;
@@ -14,7 +14,7 @@ body {
 }
 
 .hud-panel {
-  background: rgba(1, 2, 10, 0.7);
+  background: rgba(1, 2, 8, 0.7);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(0, 102, 255, 0.4);
   box-shadow: 0 0 20px rgba(0, 102, 255, 0.1), inset 0 0 15px rgba(0, 102, 255, 0.05);
@@ -32,7 +32,7 @@ body {
   top: 0; left: 0; width: 100vw; height: 100vh;
   pointer-events: none;
   z-index: 5;
-  background: radial-gradient(circle at center, transparent 10%, rgba(0,0,0,0.9) 100%);
+  background: radial-gradient(circle at center, transparent 20%, rgba(0,0,0,0.9) 100%);
 }
 
 .neon-text {

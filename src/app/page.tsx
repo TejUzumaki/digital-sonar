@@ -2,13 +2,13 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Activity, AudioLines, Copy, Power, Settings, Radar, ChevronDown, ChevronUp, Navigation } from 'lucide-react';
+import { Activity, AudioLines, Copy, Power, Settings, Radar, ChevronDown, ChevronUp, Navigation, Box } from 'lucide-react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Text } from '@react-three/drei';
+import { OrbitControls, Text, Line } from '@react-three/drei';
 import * as THREE from 'three';
 
-// Custom GLSL Shader for Full-Screen Turbulent Fluid Fog
-const fluidVertexShader = `
+// Custom GLSL Shader for the Moving Fog Entity
+const fogVertexShader = `
   varying vec3 vPos;
   varying vec3 vNormal;
   void main() {
@@ -18,14 +18,12 @@ const fluidVertexShader = `
   }
 `;
 
-const fluidFragmentShader = `
+const fogFragmentShader = `
   varying vec3 vPos;
   varying vec3 vNormal;
   uniform float uTime;
   uniform float uEnergy;
-  uniform vec3 uMotionDir;
 
-  // Simplex 3D Noise
   vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
   vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
   float snoise(vec3 v){ 
@@ -76,85 +74,129 @@ const fluidFragmentShader = `
   }
 
   void main() {
-    // Large scale turbulence + small scale detail
-    float n1 = snoise(vPos * 0.8 + uTime * 0.2);
-    float n2 = snoise(vPos * 2.5 + uTime * 0.6);
-    float density = n1 * 0.7 + n2 * 0.3;
+    float n1 = snoise(vPos * 1.5 + uTime * 0.5);
+    float n2 = snoise(vPos * 4.0 + uTime * 1.2);
+    float density = n1 * 0.6 + n2 * 0.4;
 
-    // Directional mask for motion
-    float dirMask = dot(normalize(vPos), normalize(uMotionDir));
-    dirMask = max(0.0, dirMask);
+    // Increase density based on energy
+    density += uEnergy * 0.02;
 
-    // Turbulence swells heavily in the direction of motion
-    float energyEffect = uEnergy * 0.02 * dirMask;
-    density += energyEffect * 3.0;
+    float alpha = smoothstep(0.1, 0.8, density);
+    alpha *= 0.7; 
 
-    // Fluid Alpha
-    float alpha = smoothstep(0.1, 0.9, density);
-    alpha *= 0.8; // Thick fog
+    // Calm Blue -> Active Red
+    vec3 calmColor = vec3(0.0, 0.2, 1.0);
+    vec3 motionColor = vec3(1.0, 0.1, 0.2);
+    vec3 finalColor = mix(calmColor, motionColor, uEnergy * 0.015);
 
-    // Deep Blue base, Cyan accents, Red motion
-    vec3 deepBlue = vec3(0.0, 0.1, 0.8);
-    vec3 neonCyan = vec3(0.0, 0.95, 1.0);
-    vec3 motionRed = vec3(1.0, 0.1, 0.2);
-    
-    vec3 baseColor = mix(deepBlue, neonCyan, density * 0.5);
-    vec3 finalColor = mix(baseColor, motionRed, energyEffect * 2.0);
-
-    // Edge glow
     float fresnel = pow(1.0 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.0);
-    finalColor += fresnel * 0.3;
+    finalColor += fresnel * 0.2;
 
-    gl_FragColor = vec4(finalColor, alpha);
+    gl_FragColor = vec4(finalColor, alpha * (uEnergy * 0.01 + 0.1));
   }
 `;
 
-// 3D Turbulent Fog Component
-function TurbulentFluid({ energyRef, motionDirRef }: { 
+// 3D Room Grid and Moving Fog Component
+function SpatialGrid({ energyRef, motionDirRef }: { 
   energyRef: React.MutableRefObject<number>, 
   motionDirRef: React.MutableRefObject<THREE.Vector3> 
 }) {
-  const meshRef = useRef<THREE.Mesh>(null);
+  const fogRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.ShaderMaterial>(null);
+  const currentPos = useRef(new THREE.Vector3(0, 0, 0));
 
   const uniforms = useMemo(() => ({
     uTime: { value: 0 },
-    uEnergy: { value: 0 },
-    uMotionDir: { value: new THREE.Vector3(0, 0, 0) }
+    uEnergy: { value: 0 }
   }), []);
 
+  // Room dimensions (5x5x3 meters)
+  const roomSize = [5, 3, 5];
+
   useFrame(() => {
-    if (!matRef.current || !meshRef.current) return;
+    if (!matRef.current || !fogRef.current) return;
     matRef.current.uniforms.uTime.value = performance.now() / 1000;
     
     const targetEnergy = energyRef.current;
     matRef.current.uniforms.uEnergy.value += (targetEnergy - matRef.current.uniforms.uEnergy.value) * 0.1;
-    
-    const targetDir = motionDirRef.current;
-    matRef.current.uniforms.uMotionDir.value.lerp(targetDir, 0.1);
+
+    if (targetEnergy > 20) {
+      // Map energy to distance (Higher energy = closer to device = lower distance)
+      // Max distance is 2.5m (half of 5m room)
+      const distance = THREE.MathUtils.mapLinear(Math.min(targetEnergy, 150), 20, 150, 2.5, 0.2);
+      
+      // Target position in 3D space
+      const targetPos = motionDirRef.current.clone().multiplyScalar(distance);
+      
+      // Smooth interpolation
+      currentPos.current.lerp(targetPos, 0.1);
+      fogRef.current.position.copy(currentPos.current);
+      
+      // Scale fog based on energy
+      const scale = THREE.MathUtils.mapLinear(targetEnergy, 20, 150, 0.3, 1.2);
+      fogRef.current.scale.setScalar(scale);
+    } else {
+      // Shrink and fade when no motion
+      fogRef.current.scale.lerp(new THREE.Vector3(0.1, 0.1, 0.1), 0.1);
+    }
   });
+
+  // Generate Grid Lines for the Room
+  const gridLines = useMemo(() => {
+    const lines: THREE.Vector3[][] = [];
+    const [w, h, d] = roomSize;
+    const hw = w / 2, hh = h / 2, hd = d / 2;
+    
+    // Floor & Ceiling
+    for (let x = -hw; x <= hw; x++) {
+      lines.push([new THREE.Vector3(x, -hh, -hd), new THREE.Vector3(x, -hh, hd)]);
+      lines.push([new THREE.Vector3(x, hh, -hd), new THREE.Vector3(x, hh, hd)]);
+    }
+    for (let z = -hd; z <= hd; z++) {
+      lines.push([new THREE.Vector3(-hw, -hh, z), new THREE.Vector3(hw, -hh, z)]);
+      lines.push([new THREE.Vector3(-hw, hh, z), new THREE.Vector3(hw, hh, z)]);
+    }
+    // Walls
+    for (let y = -hh; y <= hh; y++) {
+      lines.push([new THREE.Vector3(-hw, y, -hd), new THREE.Vector3(hw, y, -hd)]);
+      lines.push([new THREE.Vector3(-hw, y, hd), new THREE.Vector3(hw, y, hd)]);
+      lines.push([new THREE.Vector3(-hw, y, -hd), new THREE.Vector3(-hw, y, hd)]);
+      lines.push([new THREE.Vector3(hw, y, -hd), new THREE.Vector3(hw, y, hd)]);
+    }
+    return lines;
+  }, []);
 
   return (
     <group>
-      {/* Core Device */}
-      <mesh rotation={[0, 0, 0]}>
+      {/* The Tablet Device Core at Origin */}
+      <mesh position={[0, 0, 0]}>
         <boxGeometry args={[0.4, 0.02, 0.25]} /> 
         <meshStandardMaterial color="#0a1a1a" emissive="#00f3ff" emissiveIntensity={0.8} />
       </mesh>
 
-      {/* Large Box Volume for Turbulent Fog */}
-      <mesh ref={meshRef} scale={5}>
-        <boxGeometry args={[1, 1, 1, 20, 20, 20]} />
+      {/* Room Wireframe Grid */}
+      {gridLines.map((points, index) => (
+        <Line key={index} points={points} color="#0066ff" lineWidth={1} transparent opacity={0.2} />
+      ))}
+
+      {/* The Moving Fog Entity */}
+      <mesh ref={fogRef} scale={0.1}>
+        <icosahedronGeometry args={[1, 8]} />
         <shaderMaterial 
           ref={matRef}
-          vertexShader={fluidVertexShader}
-          fragmentShader={fluidFragmentShader}
+          vertexShader={fogVertexShader}
+          fragmentShader={fogFragmentShader}
           uniforms={uniforms}
           transparent={true}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
       </mesh>
+
+      <Text position={[0, 1.8, 0]} fontSize={0.15} color="#00f3ff" anchorX="center">NORTH WALL</Text>
+      <Text position={[0, 1.8, -2.6]} fontSize={0.15} color="#ff00ff" anchorX="center">SOUTH WALL</Text>
+      <Text position={[2.6, 1.8, 0]} rotation={[0, Math.PI/2, 0]} fontSize={0.15} color="#ff00ff" anchorX="center">EAST</Text>
+      <Text position={[-2.6, 1.8, 0]} rotation={[0, -Math.PI/2, 0]} fontSize={0.15} color="#ff00ff" anchorX="center">WEST</Text>
     </group>
   );
 }
@@ -183,14 +225,9 @@ function CollapsiblePanel({ title, icon, children, defaultOpen = true, positionC
   );
 }
 
-// Helper: Convert Vector to Cardinal Direction
 function getCardinalDirection(vec: THREE.Vector3, compassHeading: number) {
-  // Assuming device is facing compassHeading (0 = North, 90 = East)
-  // Device local Z+ is forward, X+ is right.
-  // We need to rotate the motion vector by the compass heading to get world vector
   const worldX = vec.x * Math.cos(compassHeading * Math.PI / 180) - vec.z * Math.sin(compassHeading * Math.PI / 180);
   const worldZ = vec.x * Math.sin(compassHeading * Math.PI / 180) + vec.z * Math.cos(compassHeading * Math.PI / 180);
-  
   const angle = Math.atan2(worldX, worldZ) * 180 / Math.PI;
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
   const idx = Math.round(((angle % 360) + 360) % 360 / 45) % 8;
@@ -204,7 +241,6 @@ export default function Home() {
   const [logs, setLogs] = useState<string[]>([]);
   const [motionState, setMotionState] = useState<'SCANNING' | 'WALKING' | 'STOPPED'>('SCANNING');
   
-  // Spatial Tracking State
   const [compassHeading, setCompassHeading] = useState(0);
   const [stopCount, setStopCount] = useState(0);
   const [currentDir, setCurrentDir] = useState('N/A');
@@ -221,7 +257,6 @@ export default function Home() {
   const rollingBaselinesRef = useRef<number[]>(new Array(8).fill(0));
   const lastLogTimeRef = useRef(0);
   
-  // 3D Math Refs
   const maxEnergyRef = useRef(0);
   const motionDirRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
   const isMovingRef = useRef(false);
@@ -237,14 +272,13 @@ export default function Home() {
     addLog("System: Logs copied to clipboard.");
   };
 
-  // Compass Listener
   useEffect(() => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
       const e = event as any;
       if (e.webkitCompassHeading) {
         setCompassHeading(e.webkitCompassHeading);
-      } else if (event.alpha) {
-        setCompassHeading(360 - event.alpha);
+      } else if (e.alpha) {
+        setCompassHeading(360 - e.alpha);
       }
     };
     window.addEventListener('deviceorientationabsolute', handleOrientation, true);
@@ -308,7 +342,6 @@ export default function Home() {
       motionDirRef.current.lerp(new THREE.Vector3(0, 0, 0), 0.1);
     }
 
-    // Path Tracking Logic
     const now = Date.now();
     const currentlyMoving = maxEnergy > 25;
     const cardinal = maxEnergy > 15 ? getCardinalDirection(totalDirVec, compassHeading) : 'N/A';
@@ -342,7 +375,7 @@ export default function Home() {
       setLogs([]);
       setStopCount(0);
       setPathHistory([]);
-      addLog("System: Initializing Fluid Tracking Engine...");
+      addLog("System: Initializing Spatial Grid Tracker...");
       setIsCalibrating(true);
       
       const context = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -390,7 +423,7 @@ export default function Home() {
           rollingBaselinesRef.current[oct] = e;
         }
         
-        addLog(`System: Calibration complete. Spatial fluid active.`);
+        addLog(`System: Calibration complete. 5x5x3m Grid active.`);
         setIsCalibrating(false);
         setIsSonarActive(true);
         setMotionState('SCANNING');
@@ -426,14 +459,14 @@ export default function Home() {
   useEffect(() => () => stopSonar(), []);
 
   return (
-    <main className="relative min-h-screen bg-[#01020a] text-white font-mono overflow-hidden">
+    <main className="relative min-h-screen bg-[#010208] text-white font-mono overflow-hidden">
       
       <div className="fixed inset-0 z-0">
-        <Canvas camera={{ position: [0, 0, 4], fov: 60 }}>
+        <Canvas camera={{ position: [0, 2, 5], fov: 60 }}>
           <ambientLight intensity={0.5} />
           <pointLight position={[10, 10, 10]} />
-          <TurbulentFluid energyRef={maxEnergyRef} motionDirRef={motionDirRef} />
-          <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.2} />
+          <SpatialGrid energyRef={maxEnergyRef} motionDirRef={motionDirRef} />
+          <OrbitControls enableZoom={true} enablePan={false} maxDistance={10} minDistance={2} />
         </Canvas>
       </div>
 
@@ -499,7 +532,7 @@ export default function Home() {
 
         <div className="absolute bottom-10 left-1/2 -translate-x-1/2 text-center">
           <motion.div animate={{ rotate: 360 }} transition={{ duration: 8, repeat: Infinity, ease: "linear" }} className="inline-block mb-2">
-            <Radar className="text-blue-400/80 neon-text" size={32} />
+            <Box className="text-blue-400/80 neon-text" size={32} />
           </motion.div>
           <AnimatePresence mode="wait">
             <motion.div
@@ -509,7 +542,7 @@ export default function Home() {
                 motionState === 'WALKING' ? 'text-red-400' : motionState === 'STOPPED' ? 'text-yellow-400' : 'text-blue-400'
               }`}
             >
-              {motionState === 'WALKING' ? 'SUBJECT IN MOTION' : motionState === 'STOPPED' ? 'SUBJECT STOPPED' : 'SCANNING'}
+              {motionState === 'WALKING' ? 'SUBJECT IN MOTION' : motionState === 'STOPPED' ? 'SUBJECT STOPPED' : 'SCANNING GRID'}
             </motion.div>
           </AnimatePresence>
         </div>
