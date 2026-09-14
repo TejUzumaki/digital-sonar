@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Activity, AudioLines, Copy, Power, Settings, Radar } from 'lucide-react';
 import { Canvas, useFrame } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
 // 3D Sonar Sphere Component
@@ -79,8 +80,8 @@ function SonarSphere({ disturbanceRef }: { disturbanceRef: React.MutableRefObjec
   return (
     <points ref={pointsRef}>
       <bufferGeometry>
-        <bufferAttribute attach="attributes-position" count={positions.length / 3} array={positions} itemSize={3} />
-        <bufferAttribute ref={colorsRef} attach="attributes-color" count={colors.length / 3} array={colors} itemSize={3} />
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+        <bufferAttribute ref={colorsRef} attach="attributes-color" args={[colors, 3]} />
       </bufferGeometry>
       <pointsMaterial size={0.1} vertexColors={true} sizeAttenuation={true} />
     </points>
@@ -376,7 +377,7 @@ export default function Home() {
               <TabletModel />
               <SonarSphere disturbanceRef={disturbanceRef} />
               {/* Optional: OrbitControls to rotate the view */}
-              <orbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.5} />
+              <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.5} />
             </Canvas>
             
             <div className="absolute bottom-4 left-0 right-0 text-center pointer-events-none">
