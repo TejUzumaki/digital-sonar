@@ -11,7 +11,8 @@ export default function Home() {
   const oscillatorRef = useRef<OscillatorNode | null>(null);
   const gainRef = useRef<GainNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const dataArrayRef = useRef<Uint8Array | null>(null);
+  // Explicitly type for ArrayBuffer to satisfy strict TS builds
+  const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
   // The Sonar Math Engine
@@ -27,7 +28,6 @@ export default function Home() {
     analyser.getByteFrequencyData(dataArray);
 
     // Calculate the bin index for 19,000 Hz
-    // Formula: binIndex = (frequency / sampleRate) * fftSize
     const baseFreq = 19000;
     const binWidth = sampleRate / fftSize;
     const baseBin = Math.floor(baseFreq / binWidth);
@@ -49,7 +49,6 @@ export default function Home() {
     }
 
     // Calculate net shift. (Toward - Away)
-    // Multiplying by a factor to make the UI more sensitive
     const netShift = (towardEnergy - awayEnergy) / 100;
     
     // Smooth out the value a bit and clamp it
@@ -95,7 +94,8 @@ export default function Home() {
       source.connect(analyser);
       
       analyserRef.current = analyser;
-      dataArrayRef.current = new Uint8Array(analyser.frequencyBinCount);
+      // Explicit ArrayBuffer allocation to fix TS2345
+      dataArrayRef.current = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
 
       setIsSonarActive(true);
       analyzeDoppler(); // Start the math loop
