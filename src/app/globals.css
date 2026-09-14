@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 :root {
-  --background: #030712;
+  --background: #05070a;
   --foreground: #ededed;
 }
 
@@ -9,4 +9,36 @@ body {
   color: var(--foreground);
   background: var(--background);
   overscroll-behavior: none;
+}
+
+/* CRT Scanlines & Chromatic Aberration for UI Panels */
+.crt-panel {
+  position: relative;
+}
+.crt-panel::before {
+  content: " ";
+  display: block;
+  position: absolute;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.03));
+  background-size: 100% 3px, 3px 100%;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Sharp Sci-Fi Borders */
+.hud-clip {
+  clip-path: polygon(0 0, calc(100% - 15px) 0, 100% 15px, 100% 100%, 15px 100%, 0 calc(100% - 15px));
+}
+.hud-clip-sm {
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+}
+
+/* Atmospheric Vignette */
+.atmosphere {
+  position: fixed;
+  top: 0; left: 0; width: 100vw; height: 100vh;
+  pointer-events: none;
+  z-index: 5;
+  background: radial-gradient(circle at center, transparent 40%, rgba(0,0,0,0.6) 100%);
 }
