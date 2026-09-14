@@ -7,31 +7,24 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
 
-// Reusable Collapsible UI Panel (Now with CRT and Sharp Corners)
+// Collapsible UI Panel (Retro-Futuristic)
 function CollapsiblePanel({ title, icon, children, defaultOpen = true, positionClass }: { 
-  title: string, 
-  icon: React.ReactNode, 
-  children: React.ReactNode, 
-  defaultOpen?: boolean,
-  positionClass: string
+  title: string, icon: React.ReactNode, children: React.ReactNode, defaultOpen?: boolean, positionClass: string
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   return (
     <div className={`absolute ${positionClass} w-72 z-10 pointer-events-auto`}>
       <motion.div 
-        className="crt-panel hud-clip bg-gray-900/60 backdrop-blur-md border border-cyan-500/30 shadow-2xl"
+        className="hud-panel hud-clip"
         initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
       >
-        <button onClick={() => setIsOpen(!isOpen)} className="w-full p-4 flex justify-between items-center text-xs uppercase tracking-wider text-cyan-400 hover:bg-cyan-500/10 transition-colors">
-          <div className="flex items-center gap-2">{icon} {title}</div>
+        <button onClick={() => setIsOpen(!isOpen)} className="w-full p-4 flex justify-between items-center text-xs uppercase tracking-widest text-cyan-300 hover:bg-cyan-500/10 transition-colors">
+          <div className="flex items-center gap-2 neon-text">{icon} {title}</div>
           {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
         <AnimatePresence>
           {isOpen && (
-            <motion.div 
-              initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden"
-            >
+            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
               <div className="p-4 pt-0 text-gray-300">{children}</div>
             </motion.div>
           )}
@@ -41,9 +34,8 @@ function CollapsiblePanel({ title, icon, children, defaultOpen = true, positionC
   );
 }
 
-// 3D Sonar Web Mesh Component
-function SonarWeb({ disturbanceRef, directionRef }: { disturbanceRef: React.MutableRefObject<number>, directionRef: React.MutableRefObject<'SCANNING' | 'INBOUND' | 'OUTBOUND'> }) {
-  const groupRef = useRef<THREE.Group>(null);
+// 3D Sonar Web Mesh Component (Now with 8 Octants)
+function SonarWeb({ octantEnergiesRef }: { octantEnergiesRef: React.MutableRefObject<number[]> }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const pointsRef = useRef<THREE.Points>(null);
   const basePositions = useRef<Float32Array | null>(null);
@@ -57,12 +49,15 @@ function SonarWeb({ disturbanceRef, directionRef }: { disturbanceRef: React.Muta
   useFrame(() => {
     if (!meshRef.current || !basePositions.current) return;
     
-    const dist = disturbanceRef.current;
-    const dir = directionRef.current;
     const time = Date.now() * 0.001;
-    
     const positions = meshRef.current.geometry.attributes.position as THREE.BufferAttribute;
     const arr = positions.array as Float32Array;
+    const mat = meshRef.current.material as THREE.MeshBasicMaterial;
+    const pMat = pointsRef.current?.material as THREE.PointsMaterial;
+
+    // Track which octants are active for global color shift
+    let maxEnergy = 0;
+    let activeOctants = 0;
 
     for (let i = 0; i < positions.count; i++) {
       const ix = i * 3, iy = i * 3 + 1, iz = i * 3 + 2;
@@ -70,9 +65,19 @@ function SonarWeb({ disturbanceRef, directionRef }: { disturbanceRef: React.Muta
       const by = basePositions.current[iy];
       const bz = basePositions.current[iz];
 
-      const noise = Math.sin(time * 2 + bx * 10) * Math.cos(time * 2 + by * 10) * Math.sin(time * 2 + bz * 10);
-      const dirMod = dir === 'INBOUND' ? 1 : dir === 'OUTBOUND' ? -0.5 : 0;
-      const displacement = 1 + (dist * 0.005 * dirMod) + (dist * noise * 0.015);
+      // Determine which of the 8 octants this point belongs to
+      const xBit = bx > 0 ? 4 : 0;
+      const yBit = by > 0 ? 2 : 0;
+      const zBit = bz > 0 ? 1 : 0;
+      const octant = xBit | yBit | zBit; // 0 to 7
+
+      const dist = octantEnergiesRef.current[octant];
+      if (dist > maxEnergy) maxEnergy = dist;
+      if (dist > 5) activeOctants++;
+
+      // Shatter effect localized to the octant
+      const noise = Math.sin(time * 4 + bx * 15) * Math.cos(time * 4 + by * 15) * Math.sin(time * 4 + bz * 15);
+      const displacement = 1 + (dist * 0.02) + (dist * noise * 0.04);
 
       arr[ix] = bx * displacement;
       arr[iy] = by * displacement;
@@ -80,38 +85,34 @@ function SonarWeb({ disturbanceRef, directionRef }: { disturbanceRef: React.Muta
     }
     positions.needsUpdate = true;
 
-    const material = meshRef.current.material as THREE.MeshBasicMaterial;
-    const pointsMaterial = pointsRef.current?.material as THREE.PointsMaterial;
-    
-    const targetColor = dir === 'INBOUND' ? new THREE.Color(0xef4444) : 
-                        dir === 'OUTBOUND' ? new THREE.Color(0x22c55e) : 
-                        new THREE.Color(0x22d3ee);
-                        
-    material.color.lerp(targetColor, 0.05);
-    if (pointsMaterial) pointsMaterial.color.lerp(targetColor, 0.05);
+    // Global color blending based on overall activity
+    const targetColor = maxEnergy > 20 ? new THREE.Color(0xef4444) : new THREE.Color(0x00f3ff);
+    mat.color.lerp(targetColor, 0.05);
+    if (pMat) pMat.color.lerp(targetColor, 0.05);
   });
 
   return (
-    <group ref={groupRef}>
+    <group>
+      {/* The Tablet Device */}
       <mesh rotation={[0, 0, 0]}>
         <boxGeometry args={[0.6, 0.03, 0.35]} /> 
-        <meshStandardMaterial color="darkgreen" emissive="green" emissiveIntensity={0.3} />
+        <meshStandardMaterial color="#0a1a1a" emissive="#00f3ff" emissiveIntensity={0.2} wireframe />
       </mesh>
 
       <mesh ref={meshRef} geometry={geometry}>
-        <meshBasicMaterial wireframe transparent opacity={0.15} color="cyan" />
+        <meshBasicMaterial wireframe transparent opacity={0.2} color="#00f3ff" />
       </mesh>
       
       <points ref={pointsRef} geometry={geometry}>
-        <pointsMaterial size={0.03} color="cyan" sizeAttenuation transparent opacity={0.9} />
+        <pointsMaterial size={0.035} color="#00f3ff" sizeAttenuation transparent opacity={0.9} />
       </points>
 
-      <Text position={[0, 1.1, 0]} fontSize={0.1} color="white" anchorX="center">UP</Text>
-      <Text position={[0, -1.1, 0]} fontSize={0.1} color="white" anchorX="center">DOWN</Text>
-      <Text position={[0, 0, 1.1]} fontSize={0.1} color="gray" anchorX="center">FRONT</Text>
-      <Text position={[0, 0, -1.1]} fontSize={0.1} color="gray" anchorX="center">BACK</Text>
-      <Text position={[1.1, 0, 0]} fontSize={0.1} color="gray" anchorX="center">RIGHT</Text>
-      <Text position={[-1.1, 0, 0]} fontSize={0.1} color="gray" anchorX="center">LEFT</Text>
+      <Text position={[0, 1.1, 0]} fontSize={0.08} color="#00f3ff" anchorX="center">UP</Text>
+      <Text position={[0, -1.1, 0]} fontSize={0.08} color="#00f3ff" anchorX="center">DOWN</Text>
+      <Text position={[0, 0, 1.1]} fontSize={0.08} color="#ff00ff" anchorX="center">FRONT</Text>
+      <Text position={[0, 0, -1.1]} fontSize={0.08} color="#ff00ff" anchorX="center">BACK</Text>
+      <Text position={[1.1, 0, 0]} fontSize={0.08} color="#ff00ff" anchorX="center">RIGHT</Text>
+      <Text position={[-1.1, 0, 0]} fontSize={0.08} color="#ff00ff" anchorX="center">LEFT</Text>
     </group>
   );
 }
@@ -120,9 +121,9 @@ export default function Home() {
   const [isSonarActive, setIsSonarActive] = useState(false);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [volume, setVolume] = useState(0.15);
-  const [energyLevel, setEnergyLevel] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
-  const [motionState, setMotionState] = useState<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
+  const [motionState, setMotionState] = useState<'SCANNING' | 'MOTION'>('SCANNING');
+  const [activeOctants, setActiveOctants] = useState<number>(0);
   
   const audioContextRef = useRef<AudioContext | null>(null);
   const oscillatorRef = useRef<OscillatorNode | null>(null);
@@ -130,15 +131,12 @@ export default function Home() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const motionStateRef = useRef<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
   
-  // DYNAMIC BASELINE MATH
-  const rollingBaselineRef = useRef(0); // Replaces static baseline
+  // 8-Octant Math Refs
+  const octantEnergiesRef = useRef<number[]>(new Array(8).fill(0));
+  const rollingBaselinesRef = useRef<number[]>(new Array(8).fill(0));
   const lastLogTimeRef = useRef(0);
   
-  const disturbanceRef = useRef(0);
-  const directionRef = useRef<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
-
   const addLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
     setLogs(prev => [...prev.slice(-50), `[${timestamp}] ${message}`]);
@@ -162,59 +160,51 @@ export default function Home() {
     const baseFreq = 19000;
     const binWidth = sampleRate / fftSize;
     const baseBin = Math.floor(baseFreq / binWidth);
-    const range = Math.floor(100 / binWidth); 
+    
+    // Divide the 200Hz window into 8 chunks of 25Hz each
+    const totalBins = Math.floor(200 / binWidth);
+    const binsPerOctant = Math.floor(totalBins / 8);
+    const startBin = baseBin - Math.floor(totalBins / 2);
 
-    let awayEnergy = 0;
-    let towardEnergy = 0;
+    let currentEnergies = new Array(8).fill(0);
+    let totalActive = 0;
+    let maxEnergy = 0;
 
-    for (let i = baseBin - range; i < baseBin - 5; i++) {
-      if (i > 0) awayEnergy += dataArray[i];
+    for (let oct = 0; oct < 8; oct++) {
+      let energy = 0;
+      const octStart = startBin + (oct * binsPerOctant);
+      
+      for (let i = 0; i < binsPerOctant; i++) {
+        const bin = octStart + i;
+        if (bin > 0 && bin < dataArray.length) {
+          energy += dataArray[bin];
+        }
+      }
+
+      // Rolling baseline per octant
+      rollingBaselinesRef.current[oct] = (rollingBaselinesRef.current[oct] * 0.96) + (energy * 0.04);
+      const dynEnergy = Math.max(0, energy - rollingBaselinesRef.current[oct]);
+      
+      currentEnergies[oct] = dynEnergy;
+      octantEnergiesRef.current[oct] = dynEnergy;
+
+      if (dynEnergy > 15) totalActive++;
+      if (dynEnergy > maxEnergy) maxEnergy = dynEnergy;
     }
-    for (let i = baseBin + 5; i < baseBin + range; i++) {
-      if (i < dataArray.length) towardEnergy += dataArray[i];
-    }
 
-    const totalEnergy = towardEnergy + awayEnergy;
-    
-    // ROLLING DYNAMIC BASELINE (Exponential Moving Average)
-    // Learns the environment continuously. Ignores static walls.
-    rollingBaselineRef.current = (rollingBaselineRef.current * 0.98) + (totalEnergy * 0.02);
-    
-    // Disturbance is only what is ABOVE the rolling average
-    const adjustedEnergy = Math.max(0, totalEnergy - rollingBaselineRef.current);
-    
-    disturbanceRef.current = adjustedEnergy;
-    setEnergyLevel(adjustedEnergy);
-
-    const direction = towardEnergy - awayEnergy;
-    let currentState = motionStateRef.current;
+    // Update UI state (throttled)
     const now = Date.now();
-
-    if (adjustedEnergy > 30) { // Lowered threshold because dynamic baseline is much closer to 0
-      if (direction > 10 && currentState !== 'INBOUND' && now - lastLogTimeRef.current > 300) {
-        currentState = 'INBOUND';
-        motionStateRef.current = currentState;
-        directionRef.current = currentState;
-        setMotionState(currentState);
+    if (now - lastLogTimeRef.current > 300) {
+      if (maxEnergy > 20 && motionState !== 'MOTION') {
+        setMotionState('MOTION');
+        const activeIdxs = currentEnergies.map((e, i) => e > 15 ? i : -1).filter(i => i !== -1);
+        addLog(`MOTION DETECTED | Octants: [${activeIdxs.join(',')}] | Peak Energy: ${maxEnergy.toFixed(0)}`);
         lastLogTimeRef.current = now;
-        addLog(`MOTION INBOUND | Dyn Energy: ${adjustedEnergy.toFixed(0)} | Delta: +${direction.toFixed(0)}`);
-      } else if (direction < -10 && currentState !== 'OUTBOUND' && now - lastLogTimeRef.current > 300) {
-        currentState = 'OUTBOUND';
-        motionStateRef.current = currentState;
-        directionRef.current = currentState;
-        setMotionState(currentState);
+      } else if (maxEnergy <= 20 && motionState !== 'SCANNING') {
+        setMotionState('SCANNING');
         lastLogTimeRef.current = now;
-        addLog(`MOTION OUTBOUND | Dyn Energy: ${adjustedEnergy.toFixed(0)} | Delta: ${direction.toFixed(0)}`);
       }
-    } else {
-      if (currentState !== 'SCANNING' && now - lastLogTimeRef.current > 500) {
-        currentState = 'SCANNING';
-        motionStateRef.current = currentState;
-        directionRef.current = currentState;
-        setMotionState(currentState);
-        lastLogTimeRef.current = now;
-        addLog(`SECTOR CLEAR | Dynamic baseline restored.`);
-      }
+      setActiveOctants(totalActive);
     }
 
     animationFrameRef.current = requestAnimationFrame(analyzeAudio);
@@ -223,7 +213,7 @@ export default function Home() {
   const startSonar = async () => {
     try {
       setLogs([]);
-      addLog("System: Initializing 3D Spatial Array...");
+      addLog("System: Initializing 8-Octant Array...");
       setIsCalibrating(true);
       
       const context = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -251,24 +241,30 @@ export default function Home() {
       analyserRef.current = analyser;
       dataArrayRef.current = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
 
-      addLog("System: Calibrating dynamic noise floor...");
+      addLog("System: Calibrating spatial noise floor...");
       setTimeout(() => {
         if (!analyserRef.current || !dataArrayRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArrayRef.current);
-        const binWidth = context.sampleRate / analyser.fftSize;
+        // Seed initial baselines
+        const sampleRate = context.sampleRate;
+        const binWidth = sampleRate / analyser.fftSize;
         const baseBin = Math.floor(19000 / binWidth);
-        const range = Math.floor(100 / binWidth);
+        const totalBins = Math.floor(200 / binWidth);
+        const binsPerOctant = Math.floor(totalBins / 8);
+        const startBin = baseBin - Math.floor(totalBins / 2);
+
+        for (let oct = 0; oct < 8; oct++) {
+          let e = 0;
+          for (let i = 0; i < binsPerOctant; i++) {
+            const bin = startBin + (oct * binsPerOctant) + i;
+            if (bin > 0 && bin < dataArrayRef.current.length) e += dataArrayRef.current[bin];
+          }
+          rollingBaselinesRef.current[oct] = e;
+        }
         
-        let totalE = 0;
-        for (let i = baseBin - range; i < baseBin - 5; i++) if (i > 0) totalE += dataArrayRef.current[i];
-        for (let i = baseBin + 5; i < baseBin + range; i++) if (i < dataArrayRef.current.length) totalE += dataArrayRef.current[i];
-        
-        rollingBaselineRef.current = totalE; // Seed the initial rolling baseline
-        addLog(`System: Calibration complete. Baseline locked at ${rollingBaselineRef.current.toFixed(0)}.`);
+        addLog(`System: Calibration complete. 8 Spatial sectors locked.`);
         setIsCalibrating(false);
         setIsSonarActive(true);
-        motionStateRef.current = 'SCANNING';
-        directionRef.current = 'SCANNING';
         analyzeAudio();
       }, 2000);
 
@@ -286,10 +282,8 @@ export default function Home() {
     analyserRef.current = null;
     setIsSonarActive(false);
     setIsCalibrating(false);
-    setEnergyLevel(0);
-    disturbanceRef.current = 0;
-    directionRef.current = 'SCANNING';
-    motionStateRef.current = 'SCANNING';
+    octantEnergiesRef.current = new Array(8).fill(0);
+    setMotionState('SCANNING');
     addLog("System: Sonar deactivated.");
   };
 
@@ -302,39 +296,39 @@ export default function Home() {
   useEffect(() => () => stopSonar(), []);
 
   return (
-    <main className="relative min-h-screen bg-[#05070a] text-white font-mono overflow-hidden">
+    <main className="relative min-h-screen bg-[#03050a] text-white font-mono overflow-hidden">
       
       <div className="fixed inset-0 z-0">
         <Canvas camera={{ position: [0, 1.5, 2.5], fov: 50 }}>
           <ambientLight intensity={0.5} />
           <pointLight position={[10, 10, 10]} />
-          <SonarWeb disturbanceRef={disturbanceRef} directionRef={directionRef} />
+          <SonarWeb octantEnergiesRef={octantEnergiesRef} />
           <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.5} />
         </Canvas>
       </div>
 
-      {/* Atmospheric Vignette */}
       <div className="atmosphere"></div>
 
-      {/* Floating UI Overlay Layer */}
       <div className="fixed inset-0 z-10 pointer-events-none p-4 sm:p-6">
         
-        <CollapsiblePanel title="Telemetry" icon={<Activity size={16} />} positionClass="top-4 left-4 sm:top-6 sm:left-6">
+        <CollapsiblePanel title="Spatial Telemetry" icon={<Activity size={16} />} positionClass="top-4 left-4 sm:top-6 sm:left-6">
           <div className="space-y-3">
-            <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-gray-500">Dyn Energy</span>
-                <span className="text-cyan-300 font-bold">{energyLevel.toFixed(0)}</span>
-              </div>
-              <div className="h-2 bg-gray-800 overflow-hidden hud-clip-sm">
-                <motion.div className="h-full bg-gradient-to-r from-green-500 to-red-500" animate={{ width: `${Math.min(100, energyLevel)}%` }} />
-              </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Active Octants</span>
+              <span className="text-cyan-300 font-bold neon-text">{activeOctants} / 8</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 mt-2">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="h-6 bg-gray-800/50 border border-cyan-500/20 flex items-center justify-center text-[10px] text-gray-600">
+                  {(octantEnergiesRef.current[i] > 15) ? 
+                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="w-full h-full bg-cyan-500/40 flex items-center justify-center text-cyan-100">O{i+1}</motion.div> 
+                    : `O${i+1}`}
+                </div>
+              ))}
             </div>
             <div className="flex justify-between items-center pt-2 border-t border-gray-800">
               <span className="text-xs text-gray-500">Status</span>
-              <span className={`text-sm font-bold ${
-                motionState === 'INBOUND' ? 'text-red-400' : motionState === 'OUTBOUND' ? 'text-green-400' : 'text-cyan-400'
-              }`}>{motionState}</span>
+              <span className={`text-sm font-bold neon-text ${motionState === 'MOTION' ? 'text-red-400' : 'text-cyan-400'}`}>{motionState}</span>
             </div>
           </div>
         </CollapsiblePanel>
@@ -366,20 +360,17 @@ export default function Home() {
           </div>
         </CollapsiblePanel>
 
-        {/* Bottom Center: Main Status */}
         <div className="absolute bottom-10 left-1/2 -translate-x-1/2 text-center">
           <motion.div animate={{ rotate: 360 }} transition={{ duration: 8, repeat: Infinity, ease: "linear" }} className="inline-block mb-2">
-            <Radar className="text-cyan-400/80" size={32} />
+            <Radar className="text-cyan-400/80 neon-text" size={32} />
           </motion.div>
           <AnimatePresence mode="wait">
             <motion.div
               key={motionState}
               initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-              className={`text-3xl font-bold tracking-widest ${
-                motionState === 'INBOUND' ? 'text-red-400' : motionState === 'OUTBOUND' ? 'text-green-400' : 'text-cyan-400'
-              }`}
+              className={`text-3xl font-bold tracking-widest neon-text ${motionState === 'MOTION' ? 'text-red-400' : 'text-cyan-400'}`}
             >
-              {motionState === 'INBOUND' ? 'TARGET INBOUND' : motionState === 'OUTBOUND' ? 'TARGET OUTBOUND' : 'SCANNING'}
+              {motionState === 'MOTION' ? 'SPATIAL MOTION' : 'SCANNING'}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -394,13 +385,7 @@ export default function Home() {
                 <p className="text-gray-600 italic text-center mt-4">Awaiting activation...</p>
               ) : (
                 logs.map((log, index) => (
-                  <div key={index} className={`font-mono ${
-                    log.includes('MOTION') ? 'text-red-300' : 
-                    log.includes('OUTBOUND') ? 'text-green-300' : 
-                    log.includes('ERROR') ? 'text-red-500' : 
-                    log.includes('Calibration') || log.includes('Baseline') ? 'text-yellow-300' :
-                    'text-gray-500'
-                  }`}>
+                  <div key={index} className={`font-mono ${log.includes('MOTION') ? 'text-red-300' : log.includes('ERROR') ? 'text-red-500' : log.includes('Calibration') ? 'text-yellow-300' : 'text-gray-500'}`}>
                     {log}
                   </div>
                 ))

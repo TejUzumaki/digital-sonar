@@ -1,8 +1,10 @@
 @import "tailwindcss";
 
 :root {
-  --background: #05070a;
-  --foreground: #ededed;
+  --background: #03050a;
+  --foreground: #e0e0e0;
+  --neon-cyan: #00f3ff;
+  --neon-magenta: #ff00ff;
 }
 
 body {
@@ -11,19 +13,12 @@ body {
   overscroll-behavior: none;
 }
 
-/* CRT Scanlines & Chromatic Aberration for UI Panels */
-.crt-panel {
-  position: relative;
-}
-.crt-panel::before {
-  content: " ";
-  display: block;
-  position: absolute;
-  top: 0; left: 0; bottom: 0; right: 0;
-  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.03));
-  background-size: 100% 3px, 3px 100%;
-  pointer-events: none;
-  z-index: 10;
+/* Retro-Futuristic Neon Panel */
+.hud-panel {
+  background: rgba(5, 10, 15, 0.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 243, 255, 0.4);
+  box-shadow: 0 0 15px rgba(0, 243, 255, 0.1), inset 0 0 10px rgba(0, 243, 255, 0.05);
 }
 
 /* Sharp Sci-Fi Borders */
@@ -40,5 +35,10 @@ body {
   top: 0; left: 0; width: 100vw; height: 100vh;
   pointer-events: none;
   z-index: 5;
-  background: radial-gradient(circle at center, transparent 40%, rgba(0,0,0,0.6) 100%);
+  background: radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.8) 100%);
+}
+
+/* Neon Glow Text */
+.neon-text {
+  text-shadow: 0 0 5px currentColor, 0 0 10px currentColor;
 }
