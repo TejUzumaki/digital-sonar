@@ -17,11 +17,9 @@ export default function Home() {
   const handLandmarkerRef = useRef<HandLandmarker | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   
-  // Calibration Refs (Mapping physical paper to digital screen)
   const calibrationPointsRef = useRef<{x: number, y: number}[]>([]);
   const homographyMatrixRef = useRef<number[] | null>(null);
   
-  // Drawing State
   const isDrawingRef = useRef(false);
   const lastPointRef = useRef<{x: number, y: number} | null>(null);
 
@@ -30,7 +28,6 @@ export default function Home() {
     setLogs(prev => [...prev.slice(-10), `[${timestamp}] ${message}`]);
   }, []);
 
-  // Initialize MediaPipe
   const initEngine = async () => {
     try {
       addLog("System: Loading MediaPipe Vision...");
@@ -43,10 +40,12 @@ export default function Home() {
         runningMode: "VIDEO",
         numHands: 1
       });
-      addLog("System: Vision model loaded. Starting camera...");
+      addLog("System: Vision model loaded. Starting back camera...");
       
-      // Start Camera
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: 'user' } });
+      // Start Back Camera (environment)
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: 1280, height: 720, facingMode: 'environment' } 
+      });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -87,7 +86,6 @@ export default function Home() {
     calibrationPointsRef.current.push({ x, y });
     
     if (calibrationPointsRef.current.length === 4) {
-      // For V1, we will use a simple bounding box mapping instead of full homography to keep it fast
       const pts = calibrationPointsRef.current;
       const minX = Math.min(pts[0].x, pts[1].x, pts[2].x, pts[3].x);
       const maxX = Math.max(pts[0].x, pts[1].x, pts[2].x, pts[3].x);
@@ -96,7 +94,7 @@ export default function Home() {
       homographyMatrixRef.current = [minX, maxX, minY, maxY];
       
       setIsCalibrating(false);
-      addLog("Calibration: Complete. Tracking pen tip (Index Finger).");
+      addLog("Calibration: Complete. Pinch thumb & index to draw.");
       startTracking();
     }
   };
@@ -115,11 +113,8 @@ export default function Home() {
       if (video.currentTime > 0) {
         const results = handLandmarkerRef.current.detectForVideo(video, performance.now());
         
-        // Clear overlay (not the drawing canvas, just the video overlay)
-        // In V1, we draw directly on the video for simplicity
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
-        // Draw calibration box if active
         if (homographyMatrixRef.current) {
           const [minX, maxX, minY, maxY] = homographyMatrixRef.current;
           ctx.strokeStyle = 'rgba(0, 243, 255, 0.3)';
@@ -129,29 +124,34 @@ export default function Home() {
 
         if (results.landmarks && results.landmarks.length > 0) {
           const landmarks = results.landmarks[0];
-          // Landmark 8 is the Index Finger Tip
+          
+          // Landmark 8 = Index Tip, Landmark 4 = Thumb Tip
           const indexTip = landmarks[8];
-          const indexPip = landmarks[6]; // Used to check if finger is extended
+          const thumbTip = landmarks[4];
           
           const x = indexTip.x * canvas.width;
           const y = indexTip.y * canvas.height;
           
-          // Check if pen is "down" (index finger extended and thumb pinching)
-          // For V1, we simulate pen down by just checking if finger is extended
-          const isPenDown = indexTip.y < indexPip.y; 
+          // Calculate pinch distance
+          const dx = (indexTip.x - thumbTip.x) * canvas.width;
+          const dy = (indexTip.y - thumbTip.y) * canvas.height;
+          const pinchDistance = Math.sqrt(dx * dx + dy * dy);
+          
+          // If fingers are close together, we are "pinching" (pen is down)
+          const isPenDown = pinchDistance < 40; // 40px threshold
 
-          // Map to calibration box
           if (homographyMatrixRef.current) {
             const [minX, maxX, minY, maxY] = homographyMatrixRef.current;
             if (x > minX && x < maxX && y > minY && y < maxY) {
               
-              // Draw cursor
+              // Draw cursor indicator
               ctx.beginPath();
-              ctx.arc(x, y, 5, 0, Math.PI * 2);
-              ctx.fillStyle = isPenDown ? strokeColor : 'gray';
-              ctx.fill();
+              ctx.arc(x, y, 8, 0, Math.PI * 2);
+              ctx.strokeStyle = isPenDown ? strokeColor : 'rgba(255, 255, 255, 0.5)';
+              ctx.lineWidth = 2;
+              ctx.stroke();
 
-              // Draw line
+              // Draw line if pinching
               if (isPenDown) {
                 if (isDrawingRef.current && lastPointRef.current) {
                   ctx.beginPath();
@@ -199,14 +199,11 @@ export default function Home() {
       
       <header className="mb-4 text-center">
         <h1 className="text-2xl font-bold text-cyan-400 tracking-widest">VIRTUAL DIGITIZER</h1>
-        <p className="text-gray-600 text-xs tracking-wide">CAMERA + CV TRACKING V1.0</p>
+        <p className="text-gray-600 text-xs tracking-wide">BACK CAMERA + PINCH TRACKING V1.1</p>
       </header>
 
       <div className="relative w-full max-w-4xl aspect-video bg-black border border-cyan-500/20 rounded-lg overflow-hidden">
-        {/* Hidden Video Feed */}
-        <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover scale-x-[-1]" playsInline />
-        
-        {/* Drawing Canvas Overlay */}
+        <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline />
         <canvas 
           ref={canvasRef} 
           width={1280} 
@@ -218,13 +215,12 @@ export default function Home() {
         {!isEngineActive && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/80">
             <button onClick={initEngine} className="bg-cyan-500 hover:bg-cyan-400 text-black font-bold py-3 px-8 rounded-lg flex items-center gap-2">
-              <Camera size={20} /> ACTIVATE CAMERA
+              <Camera size={20} /> ACTIVATE BACK CAMERA
             </button>
           </div>
         )}
       </div>
 
-      {/* Controls */}
       <div className="mt-4 flex flex-wrap gap-4 items-center justify-center">
         <button onClick={clearCanvas} disabled={!isEngineActive} className="hud-clip-sm bg-red-600/80 hover:bg-red-500 text-white px-4 py-2 rounded flex items-center gap-2 text-sm disabled:opacity-50">
           <Trash2 size={16} /> CLEAR
@@ -246,7 +242,6 @@ export default function Home() {
         )}
       </div>
 
-      {/* Logs */}
       <div className="mt-4 w-full max-w-4xl bg-gray-900/50 p-2 rounded h-24 overflow-y-auto text-xs text-gray-500">
         {logs.map((log, i) => <div key={i}>{log}</div>)}
       </div>
