@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 
 export default function Home() {
   const [isSonarActive, setIsSonarActive] = useState(false);
-  const [volume, setVolume] = useState(0.05);
+  const [volume, setVolume] = useState(0.1); // Increased default volume slightly
   const [dopplerShift, setDopplerShift] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [motionState, setMotionState] = useState<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
@@ -16,25 +16,22 @@ export default function Home() {
   const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const motionStateRef = useRef<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
+  const frameCounterRef = useRef(0);
 
-  // Logging Utility
   const addLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
     setLogs(prev => [...prev, `[${timestamp}] ${message}`]);
   }, []);
 
-  // Copy Logs to Clipboard
   const copyLogs = () => {
     const logText = logs.join('\n');
     navigator.clipboard.writeText(logText).then(() => {
       addLog("System: Logs copied to clipboard.");
     }).catch(err => {
       addLog("System: Failed to copy logs.");
-      console.error(err);
     });
   };
 
-  // The Sonar Math Engine
   const analyzeDoppler = () => {
     if (!analyserRef.current || !dataArrayRef.current || !audioContextRef.current) return;
 
@@ -60,20 +57,26 @@ export default function Home() {
       if (i < dataArray.length) towardEnergy += dataArray[i];
     }
 
-    const netShift = (towardEnergy - awayEnergy) / 100;
+    const netShift = (towardEnergy - awayEnergy) / 50; // Increased sensitivity
     const smoothedShift = Math.max(-100, Math.min(100, netShift));
     setDopplerShift(prev => (prev * 0.8) + (smoothedShift * 0.2));
 
-    // State transition logging
+    // Log telemetry every ~1 second so you know it's alive
+    frameCounterRef.current++;
+    if (frameCounterRef.current % 60 === 0) {
+      addLog(`Telemetry | Toward: ${towardEnergy} | Away: ${awayEnergy} | Net: ${smoothedShift.toFixed(2)}`);
+    }
+
     let currentState = motionStateRef.current;
-    if (smoothedShift > 15) {
+    // Lowered threshold from 15 to 5 for easier detection
+    if (smoothedShift > 5) {
       if (currentState !== 'INBOUND') {
         currentState = 'INBOUND';
         motionStateRef.current = currentState;
         setMotionState(currentState);
         addLog(`MOTION INBOUND | Shift: +${smoothedShift.toFixed(2)} Hz | Object approaching.`);
       }
-    } else if (smoothedShift < -15) {
+    } else if (smoothedShift < -5) {
       if (currentState !== 'OUTBOUND') {
         currentState = 'OUTBOUND';
         motionStateRef.current = currentState;
@@ -92,13 +95,19 @@ export default function Home() {
     animationFrameRef.current = requestAnimationFrame(analyzeDoppler);
   };
 
-  // Start the Sonar System
   const startSonar = async () => {
     try {
-      setLogs([]); // Clear previous logs
+      setLogs([]);
       addLog("System: Initializing Sonar Array...");
       
       const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+      
+      // CRITICAL FIX: Mobile browsers start AudioContext in "suspended" mode. We must force it to run.
+      if (context.state === 'suspended') {
+        addLog("System: Waking up suspended audio engine...");
+        await context.resume();
+      }
+      
       audioContextRef.current = context;
 
       const oscillator = context.createOscillator();
@@ -137,11 +146,9 @@ export default function Home() {
       analyzeDoppler();
     } catch (err) {
       addLog("System: FATAL ERROR - Sonar initialization failed.");
-      console.error(err);
     }
   };
 
-  // Stop the Sonar System
   const stopSonar = () => {
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     if (oscillatorRef.current) oscillatorRef.current.stop();
@@ -171,7 +178,6 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-start p-4 sm:p-8 font-mono overflow-hidden">
       
-      {/* Background Grid for 3D Depth */}
       <div className="fixed inset-0 bg-[linear-gradient(to_right,#0f172a_1px,transparent_1px),linear-gradient(to_bottom,#0f172a_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none"></div>
 
       <header className="z-10 text-center mb-8 mt-4">
@@ -185,28 +191,22 @@ export default function Home() {
 
       <div className="z-10 flex flex-col lg:flex-row gap-8 w-full max-w-6xl justify-center items-center">
         
-        {/* Left: 3D Radar UI */}
         <div className="flex flex-col items-center gap-6 w-full lg:w-1/2">
           <div className="relative w-72 h-72 sm:w-96 sm:h-96 [transform:perspective(1000px)_rotateX(25deg)]">
-            {/* Holographic Base Glow */}
             <div className="absolute inset-0 bg-cyan-500/10 blur-3xl rounded-full"></div>
             
-            {/* Radar Rings */}
             <div className="absolute w-full h-full rounded-full border-2 border-cyan-400/30 shadow-[0_0_20px_rgba(34,211,238,0.3)]"></div>
             <div className="absolute w-3/4 h-3/4 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-400/20"></div>
             <div className="absolute w-1/2 h-1/2 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-400/20"></div>
             <div className="absolute w-1/4 h-1/4 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-400/20"></div>
             
-            {/* Crosshairs */}
             <div className="absolute top-1/2 left-0 w-full h-px bg-cyan-400/20"></div>
             <div className="absolute left-1/2 top-0 h-full w-px bg-cyan-400/20"></div>
 
-            {/* Sweeping Radar Line */}
             {isSonarActive && (
               <div className="absolute top-1/2 left-1/2 w-1/2 h-1 origin-left bg-gradient-to-r from-cyan-400/0 via-cyan-400/80 to-cyan-400 animate-[spin_3s_linear_infinite] shadow-[0_0_10px_rgba(34,211,238,0.8)]"></div>
             )}
 
-            {/* Doppler Pulse (Inbound - Red) */}
             {motionState === 'INBOUND' && (
               <div 
                 className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-red-500/40 animate-ping"
@@ -218,7 +218,6 @@ export default function Home() {
               ></div>
             )}
 
-            {/* Doppler Pulse (Outbound - Green) */}
             {motionState === 'OUTBOUND' && (
               <div 
                 className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-green-500/50"
@@ -230,7 +229,6 @@ export default function Home() {
               ></div>
             )}
 
-            {/* Center Core */}
             <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full transition-colors duration-100 ${
               motionState === 'INBOUND' ? 'bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.8)]' : 
               motionState === 'OUTBOUND' ? 'bg-green-500 shadow-[0_0_20px_rgba(34,197,94,0.8)]' : 
@@ -238,7 +236,6 @@ export default function Home() {
             }`}></div>
           </div>
 
-          {/* Status Display */}
           <div className="text-center h-16 flex flex-col justify-center bg-gray-900/50 backdrop-blur-md border border-cyan-500/20 px-8 py-4 rounded-lg w-full max-w-xs">
             <div className={`text-xl font-bold tracking-wider ${
               motionState === 'INBOUND' ? 'text-red-400' : 
@@ -254,7 +251,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Controls */}
           {!isSonarActive ? (
             <button 
               onClick={startSonar}
@@ -288,7 +284,6 @@ export default function Home() {
           )}
         </div>
 
-        {/* Right: System Logs */}
         <div className="w-full lg:w-1/2 h-96 lg:h-[500px] bg-gray-900/50 backdrop-blur-md border border-cyan-500/20 rounded-lg flex flex-col">
           <div className="flex items-center justify-between p-3 border-b border-cyan-500/20">
             <h2 className="text-sm font-bold text-cyan-400 tracking-wider">SYSTEM LOGS</h2>
@@ -309,6 +304,7 @@ export default function Home() {
                   log.includes('FATAL') ? 'text-red-400' : 
                   log.includes('INBOUND') ? 'text-red-300' : 
                   log.includes('OUTBOUND') ? 'text-green-300' : 
+                  log.includes('Telemetry') ? 'text-gray-500' : 
                   log.includes('System') ? 'text-gray-400' : 
                   'text-cyan-300'
                 }`}>

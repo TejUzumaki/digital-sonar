@@ -1,13 +1,12 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 :root {
-  --background: #0a0a0a;
+  --background: #030712;
   --foreground: #ededed;
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
+  overscroll-behavior: none;
 }
