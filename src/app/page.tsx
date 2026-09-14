@@ -2,13 +2,13 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Activity, AudioLines, Copy, Power, Settings, Radar, ChevronDown, ChevronUp } from 'lucide-react';
+import { Activity, AudioLines, Copy, Power, Settings, Radar, ChevronDown, ChevronUp, Navigation } from 'lucide-react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
 
-// Custom GLSL Shader for Volumetric Fog
-const fogVertexShader = `
+// Custom GLSL Shader for Full-Screen Turbulent Fluid Fog
+const fluidVertexShader = `
   varying vec3 vPos;
   varying vec3 vNormal;
   void main() {
@@ -18,17 +18,16 @@ const fogVertexShader = `
   }
 `;
 
-const fogFragmentShader = `
+const fluidFragmentShader = `
   varying vec3 vPos;
   varying vec3 vNormal;
   uniform float uTime;
   uniform float uEnergy;
   uniform vec3 uMotionDir;
 
-  // Simplex 3D Noise by Ian McEwan, Ashima Arts
+  // Simplex 3D Noise
   vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
   vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
-
   float snoise(vec3 v){ 
     const vec2 C = vec2(1.0/6.0, 1.0/3.0);
     const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
@@ -77,38 +76,41 @@ const fogFragmentShader = `
   }
 
   void main() {
-    // Base noise for cloud swirl
-    float n1 = snoise(vPos * 1.5 + uTime * 0.3);
-    float n2 = snoise(vPos * 4.0 + uTime * 0.8);
-    float density = n1 * 0.6 + n2 * 0.4;
+    // Large scale turbulence + small scale detail
+    float n1 = snoise(vPos * 0.8 + uTime * 0.2);
+    float n2 = snoise(vPos * 2.5 + uTime * 0.6);
+    float density = n1 * 0.7 + n2 * 0.3;
 
-    // Directional masking (where is the motion?)
+    // Directional mask for motion
     float dirMask = dot(normalize(vPos), normalize(uMotionDir));
-    dirMask = max(0.0, dirMask); // Only affect the hemisphere facing the motion
+    dirMask = max(0.0, dirMask);
 
-    // Energy swelling effect
-    float energyEffect = uEnergy * 0.01 * dirMask;
-    density += energyEffect * 2.0;
+    // Turbulence swells heavily in the direction of motion
+    float energyEffect = uEnergy * 0.02 * dirMask;
+    density += energyEffect * 3.0;
 
-    // Alpha calculation (make it look like a cloud)
-    float alpha = smoothstep(0.2, 0.8, density);
-    alpha *= 0.6; // Keep it semi-transparent
+    // Fluid Alpha
+    float alpha = smoothstep(0.1, 0.9, density);
+    alpha *= 0.8; // Thick fog
 
-    // Color blending (Cyan to Red)
-    vec3 calmColor = vec3(0.0, 0.95, 1.0); // Neon Cyan
-    vec3 motionColor = vec3(1.0, 0.1, 0.2); // Neon Red
-    vec3 finalColor = mix(calmColor, motionColor, energyEffect * 3.0);
+    // Deep Blue base, Cyan accents, Red motion
+    vec3 deepBlue = vec3(0.0, 0.1, 0.8);
+    vec3 neonCyan = vec3(0.0, 0.95, 1.0);
+    vec3 motionRed = vec3(1.0, 0.1, 0.2);
+    
+    vec3 baseColor = mix(deepBlue, neonCyan, density * 0.5);
+    vec3 finalColor = mix(baseColor, motionRed, energyEffect * 2.0);
 
-    // Add edge glow
+    // Edge glow
     float fresnel = pow(1.0 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.0);
-    finalColor += fresnel * 0.2;
+    finalColor += fresnel * 0.3;
 
     gl_FragColor = vec4(finalColor, alpha);
   }
 `;
 
-// 3D Volumetric Fog Component
-function VolumetricFog({ energyRef, motionDirRef }: { 
+// 3D Turbulent Fog Component
+function TurbulentFluid({ energyRef, motionDirRef }: { 
   energyRef: React.MutableRefObject<number>, 
   motionDirRef: React.MutableRefObject<THREE.Vector3> 
 }) {
@@ -123,47 +125,36 @@ function VolumetricFog({ energyRef, motionDirRef }: {
 
   useFrame(() => {
     if (!matRef.current || !meshRef.current) return;
-    
-    // Update shader uniforms
     matRef.current.uniforms.uTime.value = performance.now() / 1000;
     
-    // Smooth energy transition
     const targetEnergy = energyRef.current;
     matRef.current.uniforms.uEnergy.value += (targetEnergy - matRef.current.uniforms.uEnergy.value) * 0.1;
     
-    // Smooth direction transition
     const targetDir = motionDirRef.current;
     matRef.current.uniforms.uMotionDir.value.lerp(targetDir, 0.1);
   });
 
   return (
     <group>
-      {/* The Tablet Device Core */}
+      {/* Core Device */}
       <mesh rotation={[0, 0, 0]}>
-        <boxGeometry args={[0.5, 0.03, 0.3]} /> 
-        <meshStandardMaterial color="#0a1a1a" emissive="#00f3ff" emissiveIntensity={0.5} />
+        <boxGeometry args={[0.4, 0.02, 0.25]} /> 
+        <meshStandardMaterial color="#0a1a1a" emissive="#00f3ff" emissiveIntensity={0.8} />
       </mesh>
 
-      {/* The Volumetric Fog Cloud (High-poly Icosahedron) */}
-      <mesh ref={meshRef} scale={1.2}>
-        <icosahedronGeometry args={[1, 20]} />
+      {/* Large Box Volume for Turbulent Fog */}
+      <mesh ref={meshRef} scale={5}>
+        <boxGeometry args={[1, 1, 1, 20, 20, 20]} />
         <shaderMaterial 
           ref={matRef}
-          vertexShader={fogVertexShader}
-          fragmentShader={fogFragmentShader}
+          vertexShader={fluidVertexShader}
+          fragmentShader={fluidFragmentShader}
           uniforms={uniforms}
           transparent={true}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
       </mesh>
-
-      <Text position={[0, 1.5, 0]} fontSize={0.1} color="#00f3ff" anchorX="center">UP</Text>
-      <Text position={[0, -1.5, 0]} fontSize={0.1} color="#00f3ff" anchorX="center">DOWN</Text>
-      <Text position={[0, 0, 1.5]} fontSize={0.1} color="#ff00ff" anchorX="center">FRONT</Text>
-      <Text position={[0, 0, -1.5]} fontSize={0.1} color="#ff00ff" anchorX="center">BACK</Text>
-      <Text position={[1.5, 0, 0]} fontSize={0.1} color="#ff00ff" anchorX="center">RIGHT</Text>
-      <Text position={[-1.5, 0, 0]} fontSize={0.1} color="#ff00ff" anchorX="center">LEFT</Text>
     </group>
   );
 }
@@ -176,7 +167,7 @@ function CollapsiblePanel({ title, icon, children, defaultOpen = true, positionC
   return (
     <div className={`absolute ${positionClass} w-72 z-10 pointer-events-auto`}>
       <motion.div className="hud-panel hud-clip" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-        <button onClick={() => setIsOpen(!isOpen)} className="w-full p-4 flex justify-between items-center text-xs uppercase tracking-widest text-cyan-300 hover:bg-cyan-500/10 transition-colors">
+        <button onClick={() => setIsOpen(!isOpen)} className="w-full p-4 flex justify-between items-center text-xs uppercase tracking-widest text-blue-300 hover:bg-blue-500/10 transition-colors">
           <div className="flex items-center gap-2 neon-text">{icon} {title}</div>
           {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
@@ -192,14 +183,33 @@ function CollapsiblePanel({ title, icon, children, defaultOpen = true, positionC
   );
 }
 
+// Helper: Convert Vector to Cardinal Direction
+function getCardinalDirection(vec: THREE.Vector3, compassHeading: number) {
+  // Assuming device is facing compassHeading (0 = North, 90 = East)
+  // Device local Z+ is forward, X+ is right.
+  // We need to rotate the motion vector by the compass heading to get world vector
+  const worldX = vec.x * Math.cos(compassHeading * Math.PI / 180) - vec.z * Math.sin(compassHeading * Math.PI / 180);
+  const worldZ = vec.x * Math.sin(compassHeading * Math.PI / 180) + vec.z * Math.cos(compassHeading * Math.PI / 180);
+  
+  const angle = Math.atan2(worldX, worldZ) * 180 / Math.PI;
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const idx = Math.round(((angle % 360) + 360) % 360 / 45) % 8;
+  return dirs[idx];
+}
+
 export default function Home() {
   const [isSonarActive, setIsSonarActive] = useState(false);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [volume, setVolume] = useState(0.15);
   const [logs, setLogs] = useState<string[]>([]);
-  const [motionState, setMotionState] = useState<'SCANNING' | 'MOTION'>('SCANNING');
-  const [activeOctantsUI, setActiveOctantsUI] = useState<number[]>([]);
+  const [motionState, setMotionState] = useState<'SCANNING' | 'WALKING' | 'STOPPED'>('SCANNING');
   
+  // Spatial Tracking State
+  const [compassHeading, setCompassHeading] = useState(0);
+  const [stopCount, setStopCount] = useState(0);
+  const [currentDir, setCurrentDir] = useState('N/A');
+  const [pathHistory, setPathHistory] = useState<string[]>([]);
+
   const audioContextRef = useRef<AudioContext | null>(null);
   const oscillatorRef = useRef<OscillatorNode | null>(null);
   const gainRef = useRef<GainNode | null>(null);
@@ -214,6 +224,8 @@ export default function Home() {
   // 3D Math Refs
   const maxEnergyRef = useRef(0);
   const motionDirRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
+  const isMovingRef = useRef(false);
+  const lastDirRef = useRef('N/A');
 
   const addLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -224,6 +236,23 @@ export default function Home() {
     navigator.clipboard.writeText(logs.join('\n'));
     addLog("System: Logs copied to clipboard.");
   };
+
+  // Compass Listener
+  useEffect(() => {
+    const handleOrientation = (event: DeviceOrientationEvent) => {
+      if (event.webkitCompassHeading) {
+        setCompassHeading(event.webkitCompassHeading);
+      } else if (event.alpha) {
+        setCompassHeading(360 - event.alpha);
+      }
+    };
+    window.addEventListener('deviceorientationabsolute', handleOrientation, true);
+    window.addEventListener('deviceorientation', handleOrientation, true);
+    return () => {
+      window.removeEventListener('deviceorientationabsolute', handleOrientation);
+      window.removeEventListener('deviceorientation', handleOrientation);
+    };
+  }, []);
 
   const analyzeAudio = () => {
     if (!analyserRef.current || !dataArrayRef.current || !audioContextRef.current) return;
@@ -242,12 +271,9 @@ export default function Home() {
     const binsPerOctant = Math.floor(totalBins / 8);
     const startBin = baseBin - Math.floor(totalBins / 2);
 
-    let currentEnergies = new Array(8).fill(0);
     let maxEnergy = 0;
-    let activeIdxs: number[] = [];
     let totalDirVec = new THREE.Vector3(0, 0, 0);
 
-    // Map octants to 3D space (X, Y, Z)
     const octantVectors = [
       new THREE.Vector3(-1, -1, -1), new THREE.Vector3(-1, -1, 1),
       new THREE.Vector3(-1, 1, -1),  new THREE.Vector3(-1, 1, 1),
@@ -266,17 +292,14 @@ export default function Home() {
       rollingBaselinesRef.current[oct] = (rollingBaselinesRef.current[oct] * 0.96) + (energy * 0.04);
       const dynEnergy = Math.max(0, energy - rollingBaselinesRef.current[oct]);
       
-      currentEnergies[oct] = dynEnergy;
       octantEnergiesRef.current[oct] = dynEnergy;
 
       if (dynEnergy > 15) {
-        activeIdxs.push(oct);
         totalDirVec.add(octantVectors[oct].clone().multiplyScalar(dynEnergy));
       }
       if (dynEnergy > maxEnergy) maxEnergy = dynEnergy;
     }
 
-    // Update 3D refs
     maxEnergyRef.current = maxEnergy;
     if (maxEnergy > 15) {
       motionDirRef.current.lerp(totalDirVec.normalize(), 0.1);
@@ -284,18 +307,30 @@ export default function Home() {
       motionDirRef.current.lerp(new THREE.Vector3(0, 0, 0), 0.1);
     }
 
-    // UI Throttle
+    // Path Tracking Logic
     const now = Date.now();
-    if (now - lastLogTimeRef.current > 300) {
-      if (maxEnergy > 20 && motionState !== 'MOTION') {
-        setMotionState('MOTION');
-        addLog(`VOLUMETRIC MOTION | Sectors: [${activeIdxs.join(',')}] | Peak: ${maxEnergy.toFixed(0)}`);
-        lastLogTimeRef.current = now;
-      } else if (maxEnergy <= 20 && motionState !== 'SCANNING') {
-        setMotionState('SCANNING');
-        lastLogTimeRef.current = now;
+    const currentlyMoving = maxEnergy > 25;
+    const cardinal = maxEnergy > 15 ? getCardinalDirection(totalDirVec, compassHeading) : 'N/A';
+
+    if (currentlyMoving !== isMovingRef.current) {
+      if (currentlyMoving) {
+        setMotionState('WALKING');
+        addLog(`PATH START | Subject began moving. Heading: ${cardinal}`);
+        setPathHistory(prev => [...prev, `START: ${cardinal}`]);
+      } else {
+        setMotionState('STOPPED');
+        setStopCount(prev => prev + 1);
+        addLog(`PATH STOP | Subject stopped. Total stops: ${stopCount + 1}`);
+        setPathHistory(prev => [...prev, `STOP`]);
       }
-      setActiveOctantsUI(activeIdxs);
+      isMovingRef.current = currentlyMoving;
+      lastLogTimeRef.current = now;
+    } else if (currentlyMoving && cardinal !== lastDirRef.current && now - lastLogTimeRef.current > 1000) {
+      addLog(`PATH CHANGE | Direction shifted to ${cardinal}`);
+      setPathHistory(prev => [...prev, `MOVE: ${cardinal}`]);
+      lastDirRef.current = cardinal;
+      lastLogTimeRef.current = now;
+      setCurrentDir(cardinal);
     }
 
     animationFrameRef.current = requestAnimationFrame(analyzeAudio);
@@ -304,7 +339,9 @@ export default function Home() {
   const startSonar = async () => {
     try {
       setLogs([]);
-      addLog("System: Initializing Volumetric Array...");
+      setStopCount(0);
+      setPathHistory([]);
+      addLog("System: Initializing Fluid Tracking Engine...");
       setIsCalibrating(true);
       
       const context = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -352,9 +389,10 @@ export default function Home() {
           rollingBaselinesRef.current[oct] = e;
         }
         
-        addLog(`System: Calibration complete. Volumetric engine active.`);
+        addLog(`System: Calibration complete. Spatial fluid active.`);
         setIsCalibrating(false);
         setIsSonarActive(true);
+        setMotionState('SCANNING');
         analyzeAudio();
       }, 2000);
 
@@ -387,14 +425,14 @@ export default function Home() {
   useEffect(() => () => stopSonar(), []);
 
   return (
-    <main className="relative min-h-screen bg-[#02040a] text-white font-mono overflow-hidden">
+    <main className="relative min-h-screen bg-[#01020a] text-white font-mono overflow-hidden">
       
       <div className="fixed inset-0 z-0">
-        <Canvas camera={{ position: [0, 1.5, 2.5], fov: 50 }}>
+        <Canvas camera={{ position: [0, 0, 4], fov: 60 }}>
           <ambientLight intensity={0.5} />
           <pointLight position={[10, 10, 10]} />
-          <VolumetricFog energyRef={maxEnergyRef} motionDirRef={motionDirRef} />
-          <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.5} />
+          <TurbulentFluid energyRef={maxEnergyRef} motionDirRef={motionDirRef} />
+          <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.2} />
         </Canvas>
       </div>
 
@@ -402,24 +440,31 @@ export default function Home() {
 
       <div className="fixed inset-0 z-10 pointer-events-none p-4 sm:p-6">
         
-        <CollapsiblePanel title="Volumetric Telemetry" icon={<Activity size={16} />} positionClass="top-4 left-4 sm:top-6 sm:left-6">
+        <CollapsiblePanel title="Spatial Tracking" icon={<Navigation size={16} />} positionClass="top-4 left-4 sm:top-6 sm:left-6">
           <div className="space-y-3">
             <div className="flex justify-between items-center">
-              <span className="text-xs text-gray-500">Active Sectors</span>
-              <span className="text-cyan-300 font-bold neon-text">{activeOctantsUI.length} / 8</span>
+              <span className="text-xs text-gray-500">Compass Heading</span>
+              <span className="text-blue-300 font-bold neon-text">{compassHeading.toFixed(0)}°</span>
             </div>
-            <div className="grid grid-cols-4 gap-1 mt-2">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} className="h-6 bg-gray-800/50 border border-cyan-500/20 flex items-center justify-center text-[10px] text-gray-600">
-                  {activeOctantsUI.includes(i) ? 
-                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="w-full h-full bg-red-500/60 flex items-center justify-center text-red-100 neon-text">S{i+1}</motion.div> 
-                    : `S${i+1}`}
-                </div>
-              ))}
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Current Direction</span>
+              <span className="text-cyan-300 font-bold neon-text">{currentDir}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Total Stops</span>
+              <span className="text-red-300 font-bold neon-text">{stopCount}</span>
+            </div>
+            <div className="pt-2 border-t border-gray-800">
+              <span className="text-xs text-gray-500 block mb-1">Path History</span>
+              <div className="h-16 overflow-y-auto text-[10px] text-gray-400 bg-black/30 p-1">
+                {pathHistory.length === 0 ? "No movement recorded." : pathHistory.join(' -> ')}
+              </div>
             </div>
             <div className="flex justify-between items-center pt-2 border-t border-gray-800">
               <span className="text-xs text-gray-500">Status</span>
-              <span className={`text-sm font-bold neon-text ${motionState === 'MOTION' ? 'text-red-400' : 'text-cyan-400'}`}>{motionState}</span>
+              <span className={`text-sm font-bold neon-text ${
+                motionState === 'WALKING' ? 'text-red-400' : motionState === 'STOPPED' ? 'text-yellow-400' : 'text-blue-400'
+              }`}>{motionState}</span>
             </div>
           </div>
         </CollapsiblePanel>
@@ -429,12 +474,12 @@ export default function Home() {
             <div>
               <div className="flex justify-between text-xs mb-2">
                 <span className="text-gray-500 flex items-center gap-1"><AudioLines size={12} /> Emitter</span>
-                <span className="text-cyan-300">{Math.round(volume * 100)}%</span>
+                <span className="text-blue-300">{Math.round(volume * 100)}%</span>
               </div>
-              <input type="range" min="0" max="0.3" step="0.01" value={volume} onChange={(e) => setVolume(parseFloat(e.target.value))} className="w-full accent-cyan-500" />
+              <input type="range" min="0" max="0.3" step="0.01" value={volume} onChange={(e) => setVolume(parseFloat(e.target.value))} className="w-full accent-blue-500" />
             </div>
             {!isSonarActive && !isCalibrating ? (
-              <button onClick={startSonar} className="hud-clip-sm w-full flex items-center justify-center gap-2 bg-cyan-500 hover:bg-cyan-400 text-black font-bold py-2 transition-all text-sm">
+              <button onClick={startSonar} className="hud-clip-sm w-full flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-400 text-black font-bold py-2 transition-all text-sm">
                 <Power size={16} /> ACTIVATE
               </button>
             ) : isCalibrating ? (
@@ -453,22 +498,24 @@ export default function Home() {
 
         <div className="absolute bottom-10 left-1/2 -translate-x-1/2 text-center">
           <motion.div animate={{ rotate: 360 }} transition={{ duration: 8, repeat: Infinity, ease: "linear" }} className="inline-block mb-2">
-            <Radar className="text-cyan-400/80 neon-text" size={32} />
+            <Radar className="text-blue-400/80 neon-text" size={32} />
           </motion.div>
           <AnimatePresence mode="wait">
             <motion.div
               key={motionState}
               initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-              className={`text-3xl font-bold tracking-widest neon-text ${motionState === 'MOTION' ? 'text-red-400' : 'text-cyan-400'}`}
+              className={`text-3xl font-bold tracking-widest neon-text ${
+                motionState === 'WALKING' ? 'text-red-400' : motionState === 'STOPPED' ? 'text-yellow-400' : 'text-blue-400'
+              }`}
             >
-              {motionState === 'MOTION' ? 'VOLUMETRIC MOTION' : 'SCANNING'}
+              {motionState === 'WALKING' ? 'SUBJECT IN MOTION' : motionState === 'STOPPED' ? 'SUBJECT STOPPED' : 'SCANNING'}
             </motion.div>
           </AnimatePresence>
         </div>
 
         <CollapsiblePanel title="System Logs" icon={<Activity size={16} />} positionClass="bottom-4 right-4 sm:bottom-6 sm:right-6" defaultOpen={false}>
           <div className="flex flex-col gap-2">
-            <button onClick={copyLogs} className="hud-clip-sm text-xs bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 px-3 py-1 flex items-center gap-1 transition-colors w-full justify-center">
+            <button onClick={copyLogs} className="hud-clip-sm text-xs bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 px-3 py-1 flex items-center gap-1 transition-colors w-full justify-center">
               <Copy size={12} /> COPY LOGS
             </button>
             <div className="h-48 overflow-y-auto p-2 space-y-1 text-xs bg-black/30">
@@ -476,7 +523,7 @@ export default function Home() {
                 <p className="text-gray-600 italic text-center mt-4">Awaiting activation...</p>
               ) : (
                 logs.map((log, index) => (
-                  <div key={index} className={`font-mono ${log.includes('MOTION') ? 'text-red-300' : log.includes('ERROR') ? 'text-red-500' : log.includes('Calibration') ? 'text-yellow-300' : 'text-gray-500'}`}>
+                  <div key={index} className={`font-mono ${log.includes('PATH') ? 'text-red-300' : log.includes('ERROR') ? 'text-red-500' : log.includes('Calibration') ? 'text-yellow-300' : 'text-gray-500'}`}>
                     {log}
                   </div>
                 ))
