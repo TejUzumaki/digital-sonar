@@ -46,7 +46,7 @@ function SonarWeb({ disturbanceRef, directionRef }: { disturbanceRef: React.Muta
   const groupRef = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
   const pointsRef = useRef<THREE.Points>(null);
-  const basePositions = useRef<Float32Array>();
+  const basePositions = useRef<Float32Array | null>(null);
   
   // Generate a high-poly Icosahedron to act as our web/dot structure
   const geometry = useMemo(() => {
