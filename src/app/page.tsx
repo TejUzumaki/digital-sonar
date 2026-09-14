@@ -240,8 +240,9 @@ export default function Home() {
   // Compass Listener
   useEffect(() => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
-      if (event.webkitCompassHeading) {
-        setCompassHeading(event.webkitCompassHeading);
+      const e = event as any;
+      if (e.webkitCompassHeading) {
+        setCompassHeading(e.webkitCompassHeading);
       } else if (event.alpha) {
         setCompassHeading(360 - event.alpha);
       }
