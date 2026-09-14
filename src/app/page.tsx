@@ -1,15 +1,107 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Activity, AudioLines, Copy, Power, Settings, Radar } from 'lucide-react';
+import { Canvas, useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+
+// 3D Sonar Sphere Component
+function SonarSphere({ disturbanceRef }: { disturbanceRef: React.MutableRefObject<number> }) {
+  const pointsRef = useRef<THREE.Points>(null);
+  const colorsRef = useRef<THREE.Float32BufferAttribute>(null);
+
+  // Generate equidistant dots using Fibonacci sphere algorithm
+  const { positions, colors } = useMemo(() => {
+    const N = 150; // Number of dots
+    const radius = 3; // Represents 100cm
+    const pos = new Float32Array(N * 3);
+    const col = new Float32Array(N * 3);
+    const phi = Math.PI * (Math.sqrt(5) - 1); // golden angle
+
+    for (let i = 0; i < N; i++) {
+      const y = 1 - (i / (N - 1)) * 2; // y goes from 1 to -1
+      const r = Math.sqrt(1 - y * y);
+      const theta = phi * i;
+      const x = Math.cos(theta) * r;
+      const z = Math.sin(theta) * r;
+      
+      pos[i * 3] = x * radius;
+      pos[i * 3 + 1] = y * radius;
+      pos[i * 3 + 2] = z * radius;
+
+      // Initial color: Green
+      col[i * 3] = 0.1;
+      col[i * 3 + 1] = 1.0;
+      col[i * 3 + 2] = 0.2;
+    }
+    return { positions: pos, colors: col };
+  }, []);
+
+  // Animate the dots based on disturbance
+  useFrame(() => {
+    if (!pointsRef.current) return;
+    
+    const disturbance = disturbanceRef.current;
+    const geometry = pointsRef.current.geometry;
+    const posAttr = geometry.attributes.position as THREE.BufferAttribute;
+    const colAttr = geometry.attributes.color as THREE.BufferAttribute;
+
+    // Target colors
+    const green = new THREE.Color(0.1, 1.0, 0.2);
+    const red = new THREE.Color(1.0, 0.1, 0.1);
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const baseX = positions[i * 3];
+      const baseY = positions[i * 3 + 1];
+      const baseZ = positions[i * 3 + 2];
+      
+      // Displace dots outward based on disturbance
+      // Add a little randomness so they don't move uniformly
+      const noise = Math.sin(Date.now() * 0.001 + i) * 0.1;
+      const displace = 1 + (disturbance * 0.3) + (disturbance * noise);
+      
+      posAttr.array[i * 3] = baseX * displace;
+      posAttr.array[i * 3 + 1] = baseY * displace;
+      posAttr.array[i * 3 + 2] = baseZ * displace;
+
+      // Lerp color from green to red
+      const targetColor = green.clone().lerp(red, Math.min(1, disturbance / 50));
+      colAttr.array[i * 3] = targetColor.r;
+      colAttr.array[i * 3 + 1] = targetColor.g;
+      colAttr.array[i * 3 + 2] = targetColor.b;
+    }
+
+    posAttr.needsUpdate = true;
+    colAttr.needsUpdate = true;
+  });
+
+  return (
+    <points ref={pointsRef}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" count={positions.length / 3} array={positions} itemSize={3} />
+        <bufferAttribute ref={colorsRef} attach="attributes-color" count={colors.length / 3} array={colors} itemSize={3} />
+      </bufferGeometry>
+      <pointsMaterial size={0.1} vertexColors={true} sizeAttenuation={true} />
+    </points>
+  );
+}
+
+// 3D Tablet Component
+function TabletModel() {
+  return (
+    <mesh rotation={[0, 0, 0]}>
+      <boxGeometry args={[1.5, 0.1, 0.8]} /> {/* Horizontal flat cuboid */}
+      <meshStandardMaterial color="darkgreen" emissive="green" emissiveIntensity={0.3} />
+    </mesh>
+  );
+}
 
 export default function Home() {
   const [isSonarActive, setIsSonarActive] = useState(false);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [volume, setVolume] = useState(0.15);
-  const [dopplerShift, setDopplerShift] = useState(0);
-  const [peakFreq, setPeakFreq] = useState(0);
+  const [energyLevel, setEnergyLevel] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [motionState, setMotionState] = useState<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
   
@@ -20,9 +112,11 @@ export default function Home() {
   const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const motionStateRef = useRef<'SCANNING' | 'INBOUND' | 'OUTBOUND'>('SCANNING');
-  const baselineFreqRef = useRef(19000);
+  const baselineEnergyRef = useRef(0);
   const lastLogTimeRef = useRef(0);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  // Ref to pass audio data to 3D engine without re-rendering
+  const disturbanceRef = useRef(0);
 
   const addLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -34,8 +128,7 @@ export default function Home() {
     addLog("System: Logs copied to clipboard.");
   };
 
-  // The Precision Math Engine
-  const analyzeDoppler = () => {
+  const analyzeAudio = () => {
     if (!analyserRef.current || !dataArrayRef.current || !audioContextRef.current) return;
 
     const analyser = analyserRef.current;
@@ -48,123 +141,62 @@ export default function Home() {
     const baseFreq = 19000;
     const binWidth = sampleRate / fftSize;
     const baseBin = Math.floor(baseFreq / binWidth);
-    
-    // We only look at a narrow window of +/- 100Hz for extreme precision
     const range = Math.floor(100 / binWidth); 
 
-    let maxAmp = 0;
-    let peakBin = baseBin;
+    let awayEnergy = 0;
+    let towardEnergy = 0;
 
-    // Find the exact bin with the highest energy in our window
-    for (let i = baseBin - range; i < baseBin + range; i++) {
-      if (i >= 0 && i < dataArray.length) {
-        if (dataArray[i] > maxAmp) {
-          maxAmp = dataArray[i];
-          peakBin = i;
-        }
-      }
+    // Sum energy in side bands (ignoring the exact peak)
+    for (let i = baseBin - range; i < baseBin - 5; i++) {
+      if (i > 0) awayEnergy += dataArray[i];
+    }
+    for (let i = baseBin + 5; i < baseBin + range; i++) {
+      if (i < dataArray.length) towardEnergy += dataArray[i];
     }
 
-    // Convert the peak bin back to a frequency
-    const currentPeakFreq = peakBin * binWidth;
-    const shift = currentPeakFreq - baselineFreqRef.current;
+    const totalEnergy = towardEnergy + awayEnergy;
+    const adjustedEnergy = Math.max(0, totalEnergy - baselineEnergyRef.current);
     
-    // Smooth the shift value for UI
-    const smoothedShift = Math.max(-100, Math.min(100, shift));
-    setDopplerShift(prev => (prev * 0.6) + (smoothedShift * 0.4));
-    setPeakFreq(currentPeakFreq);
+    // Pass to 3D engine
+    disturbanceRef.current = adjustedEnergy;
+    setEnergyLevel(adjustedEnergy);
 
-    // 2D Canvas Visualizer - Draw what the mic actually hears
-    if (canvasRef.current) {
-      const ctx = canvasRef.current.getContext('2d');
-      if (ctx) {
-        const W = canvasRef.current.width;
-        const H = canvasRef.current.height;
-        ctx.clearRect(0, 0, W, H);
-
-        // Draw Grid
-        ctx.strokeStyle = 'rgba(34, 211, 238, 0.1)';
-        ctx.lineWidth = 1;
-        for (let i = 0; i <= 4; i++) {
-          const y = (H / 4) * i;
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(W, y);
-          ctx.stroke();
-        }
-
-        // Draw 19,000 Hz Center Line (Baseline)
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.setLineDash([5, 5]);
-        ctx.beginPath();
-        ctx.moveTo(W / 2, 0);
-        ctx.lineTo(W / 2, H);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Draw the actual waveform
-        ctx.beginPath();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = motionState === 'INBOUND' ? '#ef4444' : motionState === 'OUTBOUND' ? '#22c55e' : '#22d3ee';
-        
-        const startBin = baseBin - range;
-        const endBin = baseBin + range;
-        const sliceWidth = W / (endBin - startBin);
-
-        for (let i = startBin; i <= endBin; i++) {
-          const x = (i - startBin) * sliceWidth;
-          const y = H - (dataArray[i] / 255) * H;
-          if (i === startBin) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-
-        // Fill under the wave
-        ctx.lineTo(W, H);
-        ctx.lineTo(0, H);
-        ctx.closePath();
-        ctx.fillStyle = motionState === 'INBOUND' ? 'rgba(239, 68, 68, 0.1)' : motionState === 'OUTBOUND' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(34, 211, 238, 0.1)';
-        ctx.fill();
-      }
-    }
-
-    // State logging with debounce
-    const now = Date.now();
+    // Determine direction
+    const direction = towardEnergy - awayEnergy;
     let currentState = motionStateRef.current;
-    
-    if (smoothedShift > 2) {
-      if (currentState !== 'INBOUND' && now - lastLogTimeRef.current > 300) {
+    const now = Date.now();
+
+    if (adjustedEnergy > 40) {
+      if (direction > 10 && currentState !== 'INBOUND' && now - lastLogTimeRef.current > 300) {
         currentState = 'INBOUND';
         motionStateRef.current = currentState;
         setMotionState(currentState);
         lastLogTimeRef.current = now;
-        addLog(`MOTION INBOUND | Peak: ${currentPeakFreq.toFixed(2)} Hz | Shift: +${smoothedShift.toFixed(2)} Hz`);
-      }
-    } else if (smoothedShift < -2) {
-      if (currentState !== 'OUTBOUND' && now - lastLogTimeRef.current > 300) {
+        addLog(`MOTION INBOUND | Energy: ${adjustedEnergy.toFixed(0)} | Delta: +${direction.toFixed(0)}`);
+      } else if (direction < -10 && currentState !== 'OUTBOUND' && now - lastLogTimeRef.current > 300) {
         currentState = 'OUTBOUND';
         motionStateRef.current = currentState;
         setMotionState(currentState);
         lastLogTimeRef.current = now;
-        addLog(`MOTION OUTBOUND | Peak: ${currentPeakFreq.toFixed(2)} Hz | Shift: ${smoothedShift.toFixed(2)} Hz`);
+        addLog(`MOTION OUTBOUND | Energy: ${adjustedEnergy.toFixed(0)} | Delta: ${direction.toFixed(0)}`);
       }
     } else {
-      if (currentState !== 'SCANNING' && now - lastLogTimeRef.current > 300) {
+      if (currentState !== 'SCANNING' && now - lastLogTimeRef.current > 500) {
         currentState = 'SCANNING';
         motionStateRef.current = currentState;
         setMotionState(currentState);
         lastLogTimeRef.current = now;
-        addLog(`SECTOR CLEAR | Peak stable at ${currentPeakFreq.toFixed(2)} Hz`);
+        addLog(`SECTOR CLEAR | Energy baseline restored.`);
       }
     }
 
-    animationFrameRef.current = requestAnimationFrame(analyzeDoppler);
+    animationFrameRef.current = requestAnimationFrame(analyzeAudio);
   };
 
   const startSonar = async () => {
     try {
       setLogs([]);
-      addLog("System: Initializing High-Res Array...");
+      addLog("System: Initializing 3D Sonar Array...");
       setIsCalibrating(true);
       
       const context = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -187,13 +219,12 @@ export default function Home() {
       });
       const source = context.createMediaStreamSource(stream);
       const analyser = context.createAnalyser();
-      analyser.fftSize = 32768; // MAXIMUM FREQUENCY RESOLUTION
+      analyser.fftSize = 32768;
       source.connect(analyser);
       analyserRef.current = analyser;
       dataArrayRef.current = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
 
-      // Calibration Phase (Find the exact baseline peak)
-      addLog("System: Calibrating baseline peak...");
+      addLog("System: Calibrating ambient noise floor...");
       setTimeout(() => {
         if (!analyserRef.current || !dataArrayRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArrayRef.current);
@@ -201,19 +232,16 @@ export default function Home() {
         const baseBin = Math.floor(19000 / binWidth);
         const range = Math.floor(100 / binWidth);
         
-        let maxAmp = 0, peakBin = baseBin;
-        for (let i = baseBin - range; i < baseBin + range; i++) {
-          if (i >= 0 && i < dataArrayRef.current.length && dataArrayRef.current[i] > maxAmp) {
-            maxAmp = dataArrayRef.current[i];
-            peakBin = i;
-          }
-        }
-        baselineFreqRef.current = peakBin * binWidth;
-        addLog(`System: Calibration complete. Baseline locked at ${baselineFreqRef.current.toFixed(2)} Hz.`);
+        let totalE = 0;
+        for (let i = baseBin - range; i < baseBin - 5; i++) if (i > 0) totalE += dataArrayRef.current[i];
+        for (let i = baseBin + 5; i < baseBin + range; i++) if (i < dataArrayRef.current.length) totalE += dataArrayRef.current[i];
+        
+        baselineEnergyRef.current = totalE * 1.2; // Add 20% margin
+        addLog(`System: Calibration complete. Baseline locked at ${baselineEnergyRef.current.toFixed(0)}.`);
         setIsCalibrating(false);
         setIsSonarActive(true);
         motionStateRef.current = 'SCANNING';
-        analyzeDoppler();
+        analyzeAudio();
       }, 2000);
 
     } catch (err) {
@@ -230,7 +258,8 @@ export default function Home() {
     analyserRef.current = null;
     setIsSonarActive(false);
     setIsCalibrating(false);
-    setDopplerShift(0);
+    setEnergyLevel(0);
+    disturbanceRef.current = 0;
     motionStateRef.current = 'SCANNING';
     addLog("System: Sonar deactivated.");
   };
@@ -259,7 +288,7 @@ export default function Home() {
           </motion.div>
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-cyan-400 tracking-widest">DIGITAL SONAR</h1>
-            <p className="text-gray-600 text-xs tracking-wide">PRECISION DOPPLER ARRAY v3.0</p>
+            <p className="text-gray-600 text-xs tracking-wide">3D SPATIAL ARRAY v4.0</p>
           </div>
         </div>
         <div className="flex items-center gap-2 bg-gray-900/50 border border-cyan-500/20 px-4 py-2 rounded-lg">
@@ -282,22 +311,13 @@ export default function Home() {
             <div className="space-y-4">
               <div>
                 <div className="flex justify-between text-xs mb-1">
-                  <span className="text-gray-500">Peak Frequency</span>
-                  <span className="text-cyan-300 font-bold">{peakFreq.toFixed(2)} Hz</span>
+                  <span className="text-gray-500">Disturbance Energy</span>
+                  <span className="text-cyan-300 font-bold">{energyLevel.toFixed(0)}</span>
                 </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-gray-500">Doppler Shift</span>
-                  <span className={`font-bold ${dopplerShift > 0 ? 'text-red-400' : dopplerShift < 0 ? 'text-green-400' : 'text-cyan-400'}`}>
-                    {dopplerShift > 0 ? '+' : ''}{dopplerShift.toFixed(2)} Hz
-                  </span>
-                </div>
-                <div className="h-2 bg-gray-800 rounded-full overflow-hidden relative">
-                  <div className="absolute top-0 left-1/2 w-px h-full bg-gray-600"></div>
+                <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
                   <motion.div 
-                    className={`absolute top-0 h-full ${dopplerShift > 0 ? 'bg-red-500' : 'bg-green-500'}`}
-                    animate={{ width: `${Math.min(50, Math.abs(dopplerShift) * 5)}%`, left: dopplerShift > 0 ? '50%' : 'auto', right: dopplerShift < 0 ? '50%' : 'auto' }}
+                    className="h-full bg-gradient-to-r from-green-500 to-red-500"
+                    animate={{ width: `${Math.min(100, energyLevel)}%` }}
                   />
                 </div>
               </div>
@@ -344,20 +364,22 @@ export default function Home() {
           </motion.div>
         </div>
 
-        {/* Middle Column: ACTUAL 2D Visualizer */}
+        {/* Middle Column: 3D Visualizer */}
         <div className="flex flex-col items-center justify-start">
           <motion.div 
             initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
-            className="relative w-full aspect-square bg-gray-900/40 backdrop-blur-md border border-cyan-500/20 rounded-xl p-4 flex flex-col"
+            className="relative w-full h-96 lg:h-[500px] bg-gray-900/40 backdrop-blur-md border border-cyan-500/20 rounded-xl overflow-hidden"
           >
-            <div className="text-xs text-gray-500 mb-2 flex justify-between">
-              <span>18,900 Hz</span>
-              <span className="text-gray-400">LIVE SPECTRUM (19k Hz)</span>
-              <span>19,100 Hz</span>
-            </div>
-            <canvas ref={canvasRef} width={400} height={400} className="w-full h-full rounded-lg bg-black/50"></canvas>
+            <Canvas camera={{ position: [0, 2, 6], fov: 50 }}>
+              <ambientLight intensity={0.5} />
+              <pointLight position={[10, 10, 10]} />
+              <TabletModel />
+              <SonarSphere disturbanceRef={disturbanceRef} />
+              {/* Optional: OrbitControls to rotate the view */}
+              <orbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.5} />
+            </Canvas>
             
-            <div className="mt-4 text-center">
+            <div className="absolute bottom-4 left-0 right-0 text-center pointer-events-none">
               <AnimatePresence mode="wait">
                 <motion.div
                   key={motionState}
