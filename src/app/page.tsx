@@ -3,125 +3,234 @@
 import { useState, useRef, useEffect } from 'react';
 
 export default function Home() {
-  const [hasMicPermission, setHasMicPermission] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isSonarActive, setIsSonarActive] = useState(false);
+  const [volume, setVolume] = useState(0.05); // Very low default volume to protect speakers
+  const [dopplerShift, setDopplerShift] = useState(0); // Positive = inbound, Negative = outbound
+  
   const audioContextRef = useRef<AudioContext | null>(null);
+  const oscillatorRef = useRef<OscillatorNode | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const dataArrayRef = useRef<Uint8Array | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
 
-  // Request Mic Permission (With RAW audio constraints for Sonar)
-  const requestMic = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false, // We WANT echoes for sonar!
-          autoGainControl: false,  // Don't mess with the volume
-          noiseSuppression: false, // Don't filter out high frequencies
-        }
-      });
-      setHasMicPermission(true);
-      
-      // Setup Web Audio API
-      const context = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const source = context.createMediaStreamSource(stream);
-      const analyser = context.createAnalyser();
-      analyser.fftSize = 4096; // Higher FFT size for better frequency resolution
-      source.connect(analyser);
-      
-      audioContextRef.current = context;
-      analyserRef.current = analyser;
-    } catch (err) {
-      console.error("Microphone access denied", err);
-    }
-  };
-
-  // Draw the Spectrogram
-  const drawSpectrogram = () => {
-    if (!analyserRef.current || !canvasRef.current) return;
-    
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  // The Sonar Math Engine
+  const analyzeDoppler = () => {
+    if (!analyserRef.current || !dataArrayRef.current || !audioContextRef.current) return;
 
     const analyser = analyserRef.current;
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    const width = canvas.width;
-    const height = canvas.height;
+    const dataArray = dataArrayRef.current;
+    const sampleRate = audioContextRef.current.sampleRate;
+    const fftSize = analyser.fftSize;
+    
+    // Get fresh frequency data
+    analyser.getByteFrequencyData(dataArray);
 
-    const draw = () => {
-      if (!isListening) return;
-      requestAnimationFrame(draw);
+    // Calculate the bin index for 19,000 Hz
+    // Formula: binIndex = (frequency / sampleRate) * fftSize
+    const baseFreq = 19000;
+    const binWidth = sampleRate / fftSize;
+    const baseBin = Math.floor(baseFreq / binWidth);
 
-      analyser.getByteFrequencyData(dataArray);
+    // Define ranges to check for Doppler shift (approx +/- 50Hz)
+    const range = Math.floor(50 / binWidth); 
 
-      // Draw a fading background for a trailing effect
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
-      ctx.fillRect(0, 0, width, height);
+    let awayEnergy = 0; // Lower frequencies (hand moving away)
+    let towardEnergy = 0; // Higher frequencies (hand moving toward)
 
-      // Draw frequency bars
-      const barWidth = (width / bufferLength) * 2.5;
-      let barHeight;
-      let xPosition = 0;
+    // Sum the energy in the bins below 19kHz (Away)
+    for (let i = baseBin - range; i < baseBin - 2; i++) {
+      if (i > 0) awayEnergy += dataArray[i];
+    }
 
-      for (let i = 0; i < bufferLength; i++) {
-        barHeight = (dataArray[i] / 255) * height;
+    // Sum the energy in the bins above 19kHz (Toward)
+    for (let i = baseBin + 2; i < baseBin + range; i++) {
+      if (i < dataArray.length) towardEnergy += dataArray[i];
+    }
 
-        // Color gradient based on frequency (Blue -> Red)
-        const hue = (i / bufferLength) * 260; 
-        ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
-        ctx.fillRect(xPosition, height - barHeight, barWidth, barHeight);
+    // Calculate net shift. (Toward - Away)
+    // Multiplying by a factor to make the UI more sensitive
+    const netShift = (towardEnergy - awayEnergy) / 100;
+    
+    // Smooth out the value a bit and clamp it
+    const smoothedShift = Math.max(-100, Math.min(100, netShift));
+    setDopplerShift(prev => (prev * 0.8) + (smoothedShift * 0.2));
 
-        xPosition += barWidth + 1;
-      }
-    };
-
-    draw();
+    animationFrameRef.current = requestAnimationFrame(analyzeDoppler);
   };
 
-  useEffect(() => {
-    if (isListening) {
-      drawSpectrogram();
+  // Start the Sonar System
+  const startSonar = async () => {
+    try {
+      // 1. Setup Audio Context
+      const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContextRef.current = context;
+
+      // 2. Setup the 19kHz Oscillator (Emitter)
+      const oscillator = context.createOscillator();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(19000, context.currentTime);
+      
+      const gainNode = context.createGain();
+      gainNode.gain.setValueAtTime(volume, context.currentTime);
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(context.destination);
+      oscillator.start();
+      
+      oscillatorRef.current = oscillator;
+      gainRef.current = gainNode;
+
+      // 3. Setup the Microphone (Receiver)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          autoGainControl: false,
+          noiseSuppression: false,
+        }
+      });
+      const source = context.createMediaStreamSource(stream);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 8192; // Large FFT for high frequency resolution
+      source.connect(analyser);
+      
+      analyserRef.current = analyser;
+      dataArrayRef.current = new Uint8Array(analyser.frequencyBinCount);
+
+      setIsSonarActive(true);
+      analyzeDoppler(); // Start the math loop
+    } catch (err) {
+      console.error("Sonar initialization failed", err);
+      alert("Failed to start sonar. Check microphone permissions.");
     }
-  }, [isListening, hasMicPermission]);
+  };
+
+  // Stop the Sonar System
+  const stopSonar = () => {
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    if (oscillatorRef.current) oscillatorRef.current.stop();
+    if (audioContextRef.current) audioContextRef.current.close();
+    
+    oscillatorRef.current = null;
+    audioContextRef.current = null;
+    analyserRef.current = null;
+    setIsSonarActive(false);
+    setDopplerShift(0);
+  };
+
+  // Adjust Emitter Volume
+  useEffect(() => {
+    if (gainRef.current && audioContextRef.current) {
+      gainRef.current.gain.setValueAtTime(volume, audioContextRef.current.currentTime);
+    }
+  }, [volume]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => stopSonar();
+  }, []);
+
+  // Determine UI state based on Doppler shift
+  const isMovingToward = dopplerShift > 10;
+  const isMovingAway = dopplerShift < -10;
+  const intensity = Math.abs(dopplerShift) / 100;
 
   return (
-    <main className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-8">
-      <h1 className="text-4xl font-bold mb-2 text-cyan-400">Digital Sonar Prototype</h1>
-      <p className="text-gray-400 mb-8">By TejUzumaki | Vibe Coding an Ultrasound Future</p>
+    <main className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center p-8 font-mono">
+      <h1 className="text-4xl font-bold mb-2 text-cyan-400">DIGITAL SONAR</h1>
+      <p className="text-gray-500 mb-8 text-sm">TejUzumaki | Doppler Motion Detection Prototype</p>
 
-      {!hasMicPermission ? (
+      {/* Sonar Radar UI */}
+      <div className="relative w-80 h-80 mb-8 flex items-center justify-center">
+        {/* Outer Rings */}
+        <div className="absolute w-full h-full rounded-full border border-cyan-900/50"></div>
+        <div className="absolute w-3/4 h-3/4 rounded-full border border-cyan-900/50"></div>
+        <div className="absolute w-1/2 h-1/2 rounded-full border border-cyan-900/50"></div>
+        <div className="absolute w-1/4 h-1/4 rounded-full border border-cyan-900/50"></div>
+        
+        {/* Crosshairs */}
+        <div className="absolute w-full h-px bg-cyan-900/30"></div>
+        <div className="absolute h-full w-px bg-cyan-900/30"></div>
+
+        {/* Doppler Pulse (Inbound - Red) */}
+        {isMovingToward && (
+          <div 
+            className="absolute rounded-full bg-red-500/50 animate-ping"
+            style={{ 
+              width: `${50 + (intensity * 50)}%`, 
+              height: `${50 + (intensity * 50)}%`,
+              transition: 'all 0.1s ease-out'
+            }}
+          ></div>
+        )}
+
+        {/* Doppler Pulse (Outbound - Green) */}
+        {isMovingAway && (
+          <div 
+            className="absolute rounded-full border-2 border-green-500/50"
+            style={{ 
+              width: `${50 + (intensity * 50)}%`, 
+              height: `${50 + (intensity * 50)}%`,
+              transition: 'all 0.1s ease-out'
+            }}
+          ></div>
+        )}
+
+        {/* Center Core */}
+        <div className={`absolute w-4 h-4 rounded-full transition-colors duration-100 ${
+          isMovingToward ? 'bg-red-500' : isMovingAway ? 'bg-green-500' : 'bg-cyan-400'
+        }`}></div>
+      </div>
+
+      {/* Status Display */}
+      <div className="mb-8 text-center h-12">
+        <div className="text-xl font-bold tracking-wider">
+          {isMovingToward ? 'MOTION DETECTED: INBOUND' : 
+           isMovingAway ? 'MOTION DETECTED: OUTBOUND' : 
+           'SCANNING...'}
+        </div>
+        <div className="text-sm text-gray-400 mt-1">
+          Shift: {dopplerShift.toFixed(2)} Hz
+        </div>
+      </div>
+
+      {/* Controls */}
+      {!isSonarActive ? (
         <button 
-          onClick={requestMic}
-          className="bg-cyan-500 hover:bg-cyan-600 text-black font-bold py-3 px-6 rounded-lg transition-colors"
+          onClick={startSonar}
+          className="bg-cyan-500 hover:bg-cyan-600 text-black font-bold py-3 px-8 rounded-lg transition-colors tracking-wider"
         >
-          Grant Microphone Access
+          ACTIVATE SONAR
         </button>
       ) : (
-        <div className="flex flex-col items-center gap-4 w-full max-w-4xl">
-          <button
-            onClick={() => setIsListening(!isListening)}
-            className={`font-bold py-3 px-6 rounded-lg transition-colors ${
-              isListening ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'
-            } text-black`}
-          >
-            {isListening ? 'Stop Listening' : 'Start Spectrogram'}
-          </button>
-          
-          <div className="w-full bg-black rounded-lg overflow-hidden border-2 border-cyan-500">
-            <canvas 
-              ref={canvasRef} 
-              width={1024} 
-              height={500} 
-              className="w-full h-auto"
+        <div className="flex flex-col items-center gap-6 w-full max-w-xs">
+          <div className="w-full">
+            <label className="text-sm text-gray-400 mb-2 block text-center">
+              Emitter Volume (19kHz)
+            </label>
+            <input 
+              type="range" 
+              min="0" 
+              max="0.3" 
+              step="0.01"
+              value={volume}
+              onChange={(e) => setVolume(parseFloat(e.target.value))}
+              className="w-full accent-cyan-500"
             />
           </div>
-          <p className="text-sm text-gray-500 text-center">
-            Note: The right side of the spectrogram represents high frequencies (Ultrasound range).
-            <br/>Raw audio constraints have been applied for sonar accuracy.
-          </p>
+          <button 
+            onClick={stopSonar}
+            className="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-lg transition-colors tracking-wider"
+          >
+            DEACTIVATE
+          </button>
         </div>
       )}
+      
+      <p className="text-xs text-gray-600 mt-8 max-w-md text-center">
+        Note: Increase volume if no motion is detected. Some tablet speakers are weak at 19kHz. 
+        Keep the tablet screen facing you and wave your hand 10-30cm away.
+      </p>
     </main>
   );
 }
